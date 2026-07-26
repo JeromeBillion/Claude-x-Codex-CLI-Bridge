@@ -1,0 +1,4 @@
+.agent-bridge/
+__pycache__/
+*.py[cod]
+.venv/

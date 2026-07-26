@@ -1,0 +1,182 @@
+# Claude x Codex CLI Bridge
+
+A raw local orchestration MVP that alternates two frontier coding agents —
+Codex (GPT-5.6 Sol) and Claude (Fable 5) — against the same project directory,
+carries their handoffs forward, keeps a shared memory doc between rounds, and
+lets a human interject after each round.
+
+The agents are paired to **check each other, not to agree with each other**:
+every turn audits the partner's previous handoff against the real repository
+before building on it, and a DONE claim only ends the session after it survives
+the other agent's adversarial verification turn.
+
+The bridge has no server, database, hosted coordinator, or Python dependency
+beyond the standard library (Python 3.11+). Transcripts and shared memory
+always stay in the bridge's own folder under `.agent-bridge\` and are ignored
+by Git, even when the agents work in another repository. Codex and Claude
+model inference still uses each provider's service; this is local
+orchestration, not offline inference.
+
+## Requirements
+
+- Windows with PowerShell (the Python core is portable; the wrapper is PowerShell)
+- Python 3.11+
+- The `codex` CLI, authenticated
+- The `claude` CLI, authenticated
+
+## Start
+
+From the project you want the agents to work on, call the bridge wherever you
+cloned it:
+
+```powershell
+$bridge = "<path-to-clone>\Claude-x-Codex-CLI-Bridge\bridge.ps1"
+& $bridge --check
+& $bridge "Inspect the settlement flow, fix the highest-risk defect, and verify it."
+```
+
+The current PowerShell directory becomes the shared agent workspace. You can
+also launch from anywhere and pass it explicitly:
+
+```powershell
+& $bridge --workspace "C:\path\to\your-project" "Get the project running and verify the core flow."
+```
+
+`--check` verifies both installed CLI versions and auth readiness without making
+a model call or printing account details.
+
+With no quoted prompt, the bridge asks for one. The default is two rounds (four
+maximum model calls), with an early stop only when one agent's DONE claim
+survives the other agent's adversarial verification turn.
+
+At each checkpoint:
+
+- press Enter to let them continue;
+- type any instruction to add it to both agents' context;
+- use `:status` to see the transcript and Git status;
+- use `:more 2` to authorize two more rounds;
+- use `:quit` to stop cleanly.
+
+Resume the most recent session later:
+
+```powershell
+& $bridge --resume latest --rounds 2
+& $bridge --resume latest "Now focus only on the failing ledger test."
+```
+
+Run without checkpoints when scripting:
+
+```powershell
+& $bridge --no-pause --rounds 1 "Review only; do not edit files."
+```
+
+Exit code 0 means the run completed or hit the round cap, not that the work was
+verified; the bridge prints a warning when the final handoff ended `CHALLENGE`
+or `BLOCKED`, and the transcript records every status.
+
+Preview the exact subprocess commands without invoking a model or writing a
+transcript:
+
+```powershell
+& $bridge --dry-run "test prompt"
+```
+
+## Defaults and guardrails
+
+- Codex command: `codex exec --model gpt-5.6-sol`
+- Codex reasoning effort: `ultra` (Sol's top tier; overrides `config.toml` per run)
+- Codex sandbox: `workspace-write`
+- Claude command: `claude --print --model claude-fable-5`
+- Claude effort: `max` (Fable 5's ceiling — the Claude CLI has no `ultra` tier)
+- Claude permission mode: `auto`
+- both agents are equal co-authors — neither outranks the other; `--lead` only
+  sets who takes the first turn each round (default Codex; `--lead claude` puts
+  Fable first)
+- per-agent timeout: 90 minutes (ultra/max turns can exceed an hour)
+- workspace guardrail: refuses to run outside a git repository unless `--allow-non-git`
+- `--resume` reuses the workspace recorded in the transcript unless `--workspace` is given
+- transcript context cap: 32,000 recent characters
+- shared memory cap: 8,000 characters (`--memory-chars`; `--no-memory` disables)
+- orchestration: sequential, so both agents do not edit the same files at once
+
+Override these with `--codex-model`, `--claude-model`, `--codex-effort`,
+`--claude-effort`, `--lead`, `--codex-sandbox`,
+`--claude-permission-mode`, `--timeout`, and `--context-chars`. Use
+`--claude-max-budget-usd 1.00` when the active Claude billing path supports that
+CLI cap. Run `& $bridge --help` for the complete option list.
+
+## Accountability protocol
+
+The agents are paired to check each other, not to agree with each other. Every
+turn starts with an audit of the partner's latest handoff against the real
+repository — re-running the tests it claims pass, reading the actual diff, and
+classifying each material claim as confirmed, refuted, or unverified — before
+any new work. Handoffs follow a fixed REVIEW / CHALLENGES / WORK / EVIDENCE
+structure, and a fourth status, `BRIDGE_STATUS: CHALLENGE`, hands refuted work
+back to its author. The prompt forbids agreeing to be agreeable: a clean
+verdict has to be earned by listing what was attacked and how it held, and
+challenges carry must-fix / should-fix severity so nits don't stall the pair.
+
+Completion is earned, not co-signed. When one agent claims `DONE`, the other
+agent's next turn becomes an adversarial verification turn: assume the claim is
+wrong, try to break it, and either return a challenge with evidence or confirm
+DONE after listing what was attacked. A verifier that has to change anything
+hands its changes back with CHALLENGE or CONTINUE instead — no agent ever
+certifies work it wrote itself, in either direction. The session stops early
+only when a DONE claim survives that verification by the other agent. A
+challenge, a failed turn, or a new human interjection voids any standing DONE
+claim, and an unanswered DONE claim survives `--resume` so the verification
+still happens. Codex remains scoped to workspace writes; Fable uses its
+autonomous local permission mode.
+
+## Shared memory
+
+Each target workspace gets one shared memory doc — a compacted context file the
+agents themselves maintain between rounds and across sessions. It is injected
+into every prompt, so a new session starts with the durable decisions,
+architecture facts, verified-DONE claims, gotchas, and open threads of every
+previous session instead of re-deriving them at full reasoning effort.
+
+An agent updates it by including a replacement block in its handoff:
+
+```text
+BRIDGE_MEMORY_BEGIN
+- decision: kept the ledger append-only; reversals are new rows (audit trail)
+- verified: settlement rounding fix survived adversarial review on 2 sessions
+- open thread: refund path still has no integration test
+BRIDGE_MEMORY_END
+```
+
+The block replaces the whole doc, so the writing agent must carry forward the
+partner's still-valid entries — curation is part of the accountability
+protocol, and the partner will challenge memory edits like any other claim.
+The bridge enforces the character cap (`--memory-chars`, default 8,000),
+records every update in the transcript, and strips memory blocks from the
+rendered conversation so the context budget is not spent twice.
+
+Memory lives under the bridge's own `.agent-bridge\memory\`, one file per
+workspace, deliberately outside the target repository: the agents audit
+`git diff` every turn, and a memory file inside the workspace would pollute
+that signal. The prompt instructs agents never to store secrets, credentials,
+or machine-specific paths in memory; transcripts and memory are plain local
+text, so do not put secrets in prompts either.
+
+## Failure behavior
+
+A failed agent turn is recorded and shown to the other agent as context. A
+timeout kills the agent's entire process tree (`taskkill /T` on Windows) so no
+orphaned agent keeps editing the repo, and any partial output the agent produced
+is salvaged into the transcript so the next agent has context. If both CLIs fail
+in the same round, the bridge stops when running unattended (`--no-pause`);
+interactively it drops to the checkpoint so the human decides.
+
+This MVP intentionally does not include parallel agents, file locking, a web UI,
+a daemon, or a third state store. The project files are the implementation
+source of truth; the JSONL transcript is the conversation source of truth; the
+shared memory doc is the compacted institutional memory the pair curates.
+
+## Tests
+
+```powershell
+python -m unittest discover -s tools/tests -p "test_*.py" -v
+```
