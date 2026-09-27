@@ -13,7 +13,18 @@ from pathlib import Path
 import sys
 
 SECRET_TEXT = "sk-ant-PLANTED-SECRET someone@example.com org-PLANTED-ORG"
-BILLING = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK")
+# A short private value shaped exactly like a harmless enum or model ID. With
+# FAKE_MARKER=all it replaces every CLI-origin field (auth too, so turns are
+# refused); with FAKE_MARKER=turns only fields that do not gate billing.
+MARKER = "priv8x7q"
+MODE = os.environ.get("FAKE_MARKER", "")
+
+
+def m(value, *, gating=False):
+    """Return the planted marker instead of value when marker mode applies."""
+    if MODE == "all" or (MODE == "turns" and not gating):
+        return MARKER
+    return value
 
 
 def log(entry: dict) -> None:
@@ -29,10 +40,15 @@ def emit(event: dict) -> None:
 
 
 def result(text: str, *, is_error: bool = False, **extra) -> dict:
-    return {"type": "result", "subtype": "success", "is_error": is_error, "result": text,
-            "session_id": "11111111-2222-3333-4444-555555555555", "permission_denials": [],
-            "terminal_reason": "completed", "api_error_status": None,
-            "modelUsage": {"claude-haiku-4-5-20251001": {}}, **extra}
+    event = {"type": "result", "subtype": "success", "is_error": is_error, "result": text,
+             "session_id": "11111111-2222-3333-4444-555555555555", "permission_denials": [],
+             "terminal_reason": "completed", "api_error_status": None,
+             "modelUsage": {"claude-haiku-4-5-20251001": {}, m("claude-sonnet-5"): {},
+                            f"claude-opus-{m('5-5')}": {}}, **extra}
+    if MODE:
+        event["subtype"] = m(event["subtype"])
+        event["terminal_reason"] = m(event["terminal_reason"])
+    return event
 
 
 def text_delta() -> dict:
@@ -69,23 +85,28 @@ def handle_turn(text: str, lines) -> None:
     else:
         emit(text_delta())
         emit({"type": "rate_limit_event", "rate_limit_info": {
-            "status": "allowed", "rateLimitType": "five_hour", "note": SECRET_TEXT,
-            "unifiedWindows": {"five_hour": {"utilization": 0.1, "resetsAt": 1}}}})
-        emit({"type": "system", "subtype": "model_refusal_fallback", "original_model": "claude-fable-5",
-              "fallback_model": "claude-opus-4-8", "trigger": "refusal",
-              "api_refusal_explanation": SECRET_TEXT})
+            "status": m("allowed"), "rateLimitType": m("five_hour"), "overageStatus": m("rejected"),
+            "note": SECRET_TEXT,
+            "unifiedWindows": {"five_hour": {"utilization": 0.1, "resetsAt": 1790520600},
+                               m("seven_day"): {"utilization": 0.2, "resetsAt": 1791064800}}}})
+        emit({"type": "system", "subtype": "model_refusal_fallback",
+              "original_model": m("claude-fable-5"), "fallback_model": m("claude-opus-4-8"),
+              "trigger": m("refusal"), "api_refusal_explanation": SECRET_TEXT})
         emit(result(SECRET_TEXT))
 
 
 def main() -> int:
     args = sys.argv[1:]
-    log({"argv": args, "billing_vars_seen": [name for name in os.environ if name.upper() in BILLING]})
+    log({"argv": args, "env_names": sorted(os.environ),
+         "env_values_with_planted": sorted(n for n, v in os.environ.items() if "PLANTED" in v)})
     if args == ["--version"]:
-        print("2.1.283 (Claude Code)")
+        print(f"2.1.283 (Claude Code) {m('build', gating=True)}")
         return 0
     if args[:2] == ["auth", "status"]:
-        print(json.dumps({"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty",
-                          "email": "someone@example.com", "orgName": SECRET_TEXT}))
+        print(json.dumps({"loggedIn": True, "authMethod": m("claude.ai", gating=True),
+                          "apiProvider": m("firstParty", gating=True),
+                          "email": "someone@example.com", "orgId": MARKER, "orgName": SECRET_TEXT,
+                          "configDirectory": f"/home/{MARKER}/.claude"}))
         return 0
     if "stream-json" not in args:
         sys.stdin.read()
@@ -101,13 +122,15 @@ def main() -> int:
             body = {}
             if subtype == "initialize":
                 body = {"account": {"email": "someone@example.com", "organization": SECRET_TEXT,
-                                    "subscriptionType": os.environ.get("FAKE_PLAN", "Claude Max"),
-                                    "apiProvider": "firstParty"},
+                                    "subscriptionType": m(os.environ.get("FAKE_PLAN", "Claude Max"), gating=True),
+                                    "apiProvider": m("firstParty", gating=True)},
                         "models": [{"value": "haiku", "resolvedModel": "claude-haiku-4-5-20251001",
                                     "displayName": "Haiku", "description": SECRET_TEXT,
                                     "supportedEffortLevels": ["low", SECRET_TEXT]},
-                                   {"value": SECRET_TEXT, "resolvedModel": "x", "displayName": SECRET_TEXT}],
-                        "current_permission_mode": "default", "commands": []}
+                                   {"value": SECRET_TEXT, "resolvedModel": "x", "displayName": SECRET_TEXT},
+                                   {"value": m("opus"), "resolvedModel": f"claude-opus-{m('5-5')}",
+                                    "displayName": m("Opus"), "supportedEffortLevels": [m("max")]}],
+                        "current_permission_mode": m("default"), "commands": []}
             emit({"type": "control_response", "response": {
                 "subtype": "success", "request_id": message["request_id"], "response": body}})
         elif message.get("type") == "user":

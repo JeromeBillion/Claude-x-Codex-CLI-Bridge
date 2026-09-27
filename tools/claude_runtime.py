@@ -39,6 +39,16 @@ from claude_runtime_probe import (
 
 
 PROVIDER = "claude"
+# Chat sessions keep the user's development environment (JAVA_HOME, their own
+# cloud CLIs, ...) but never anything that picks who bills Claude: every
+# Anthropic variable, Claude Code token or provider switch, the Bedrock bearer
+# token, Vertex region routing and NODE_OPTIONS code injection. Preflight and
+# the probe use the stricter allowlist in `child_env`.
+SESSION_ENV_BLOCKED_PREFIXES = (
+    "ANTHROPIC_", "CLAUDE_CODE_USE_", "CLAUDE_CODE_SKIP_", "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_API_KEY", "AWS_BEARER_TOKEN_BEDROCK", "VERTEX_REGION_",
+)
+SESSION_ENV_BLOCKED = frozenset({"CLOUD_ML_REGION", "NODE_OPTIONS"})
 # Oldest CLI with every flag this adapter passes (`--permission-prompts`, Opus 5.5).
 MIN_VERSION = (2, 1, 280)
 # Newest CLI whose stream-json shapes were observed; newer runs but is flagged.
@@ -71,6 +81,15 @@ class Preflight:
     auth: dict[str, Any]
     account: dict[str, Any]
     models: list[dict[str, Any]]
+
+
+def session_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    source = dict(os.environ if base is None else base)
+    env = {name: value for name, value in source.items()
+           if not name.upper().startswith(SESSION_ENV_BLOCKED_PREFIXES)
+           and name.upper() not in SESSION_ENV_BLOCKED}
+    env["DISABLE_AUTOUPDATER"] = "1"  # upgrades go through the version guard, not mid-session
+    return env
 
 
 def discover_claude(env: dict[str, str] | None = None) -> list[str]:
@@ -210,7 +229,7 @@ class ClaudeSession:
             command += ["--resume", resume]
         elif session_id:
             command += ["--session-id", session_id]
-        self.process = spawn(command, cwd=workspace, env=child_env(), stdin=subprocess.PIPE,
+        self.process = spawn(command, cwd=workspace, env=session_env(), stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                              encoding="utf-8", errors="replace")
         self._events: queue.Queue[dict[str, Any] | None] = queue.Queue()

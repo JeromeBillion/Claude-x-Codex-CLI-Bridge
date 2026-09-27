@@ -40,7 +40,10 @@ discover → preflight → trust gate → spawn chat process → turns … → c
           --include-partial-messages --permission-prompt-tool stdio --permission-mode default
           --model <menu value> (--session-id <uuid> | --resume <id>)
    ```
-   - `child_env()` removes `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and the Bedrock, Vertex and Foundry variables.
+   - Environment, in two tiers:
+     - Preflight (and the probe) run with `child_env()`, a strict allowlist of OS, profile, locale, proxy/CA and `CLAUDE_CONFIG_DIR` variables.
+     - Chat sessions run with `session_env()`. It keeps the user's development environment but removes every `ANTHROPIC_*`, `CLAUDE_CODE_USE_*`, `CLAUDE_CODE_SKIP_*`, `CLAUDE_CODE_OAUTH_TOKEN*` and `CLAUDE_CODE_API_KEY*` variable, plus `AWS_BEARER_TOKEN_BEDROCK`, `VERTEX_REGION_*`, `CLOUD_ML_REGION` and `NODE_OPTIONS`. General AWS, Google Cloud and Azure credentials stay available to the user's own tools, but they cannot route Claude billing without the stripped provider switches.
+     - Preflight also refuses anything that is not a first-party `claude.ai` login, which catches provider switches set through settings files.
    - Never pass `--bare`, which ignores OAuth. The docs say bare mode will become the default for `-p`, and the version guard exists to catch that.
    - User and project settings, plugins and MCP servers load as normal. That is the point of a personal workspace, and the trust gate covers it.
 5. **Close.** Close stdin, wait, then kill if needed. On Windows, kill with `taskkill /T` for `.cmd` shims, as the bridge already does. SIGTERM or a kill mid-turn leaves the turn unfinished, so the UI sends `interrupt` first.

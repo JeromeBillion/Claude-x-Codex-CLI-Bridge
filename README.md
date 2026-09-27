@@ -192,19 +192,24 @@ tool approval (allow and deny), an interrupt and an unknown-model failure.
 
 Guardrails the probe enforces:
 
-- API-key, gateway and cloud-provider variables are removed from every child
-  environment.
-- Turns run only when the CLI itself reports a first-party Claude Pro, Max,
-  Team or Enterprise login. Otherwise the probe exits with code 2 and
-  `turns_refused` before any model call.
-- Fable is refused as a probe model, because in `-p` mode it can bill usage
-  credits without a consent prompt.
+- Child processes get an allowlisted environment only: OS and profile
+  plumbing, locale, proxy/CA settings and `CLAUDE_CONFIG_DIR`. Everything
+  else is dropped, including API keys, gateway URLs, OAuth tokens, provider
+  switches, and AWS, Google Cloud and Azure credentials.
+- Turns run only when the CLI itself reports a first-party claude.ai login on
+  a Claude Pro, Max, Team or Enterprise plan with no API key source.
+  Otherwise the probe exits with code 2 and `turns_refused` before any model
+  call.
+- Only the cheap plan models (`haiku`, `sonnet`) can be chosen for probe
+  turns. Fable can bill usage credits in `-p` mode without a consent prompt.
 - Child sessions load no user or project settings, hooks or MCP servers.
 - A tool approval is granted only for a Write whose resolved target stays
   inside the throwaway probe directory. Traversal, outside absolute paths and
   escaping links are denied.
-- The JSON report holds only allowlisted, pattern-checked fields, booleans and
-  counts. It never includes model output, account e-mail, organization or IDs.
+- Every string in the JSON report comes from a fixed public set. Any other
+  value prints as `unlisted`, or as a family bucket for model IDs, such as
+  `unlisted-claude-opus`. Everything else in the report is a boolean, a
+  bounded number or a count. Failures print only a fixed error code (exit 3).
 
 The resume probe leaves one short session in the CLI's own local history.
 
