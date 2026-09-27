@@ -175,6 +175,25 @@ a daemon, or a third state store. The project files are the implementation
 source of truth; the JSONL transcript is the conversation source of truth; the
 shared memory doc is the compacted institutional memory the pair curates.
 
+## Claude runtime probe
+
+`tools/claude_runtime_probe.py` checks what a desktop host can get from the
+installed, unmodified `claude` CLI when it is driven the way the Agent SDK
+drives it (`--print`, stream-json in and out). It reports the auth method, the
+plan type, and the model menu the CLI offers this account. It never reads
+credential files, never uses an API key, and never prints account e-mail,
+organization or IDs.
+
+```powershell
+python tools\claude_runtime_probe.py            # inventory only, no model call
+python tools\claude_runtime_probe.py --turns    # adds small turns on your usage
+```
+
+`--turns` adds a streamed turn, a mid-session model switch, a session resume, a
+tool approval (allow and deny), an interrupt and an unknown-model failure. All of
+it runs in a throwaway directory with only the Write tool enabled. The resume
+probe leaves one short session in the CLI's own local history.
+
 ## Tests
 
 ```powershell
