@@ -12,7 +12,10 @@ from pathlib import Path
 import queue
 import subprocess
 import threading
+import time
 from typing import Any
+
+from tools.runtime_events import Envelope
 
 
 class AppServerError(RuntimeError):
@@ -29,12 +32,13 @@ class AppServerTransport:
         "mcpServerStatus/list", "app/installed",
     })
 
-    def __init__(self, executable: str = "codex", *, timeout: float = 15.0) -> None:
+    def __init__(self, executable: str = "codex", *, timeout: float = 15.0,
+                 env: dict[str, str] | None = None) -> None:
         self.timeout = timeout
         self.process = subprocess.Popen(
             [executable, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace",
-            bufsize=1, shell=False,
+            bufsize=1, shell=False, env=env,
         )
         self._write_lock = threading.Lock()
         self._pending_lock = threading.Lock()
@@ -145,6 +149,128 @@ class ThreadStore:
         os.replace(temporary, self.path)
 
 
+class TrustedFolderStore:
+    """An explicit host-side trust choice, separate from Codex's project trust."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    @staticmethod
+    def _key(workspace: Path) -> str:
+        return os.path.normcase(str(workspace.resolve(strict=True)))
+
+    def is_trusted(self, workspace: Path) -> bool:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return False
+        return isinstance(data, dict) and data.get(self._key(workspace)) is True
+
+    def trust(self, workspace: Path) -> None:
+        """Call only after the user explicitly trusts this exact folder in the UI."""
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data[self._key(workspace)] = True
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_name(self.path.name + ".tmp")
+        with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as handle:
+            json.dump(data, handle)
+        os.replace(temporary, self.path)
+
+
+def _failure_kind(error: dict[str, Any] | None) -> str | None:
+    if not isinstance(error, dict):
+        return None
+    info = error.get("codexErrorInfo") or {}
+    name = info if isinstance(info, str) else info.get("type", "")
+    status = info.get("httpStatusCode") if isinstance(info, dict) else None
+    if name == "UsageLimitExceeded":
+        return "limit"
+    if name == "Unauthorized" or status in {401, 403}:
+        return "auth"
+    if name in {"HttpConnectionFailed", "ResponseStreamConnectionFailed", "ResponseStreamDisconnected"}:
+        return "connection"
+    return "other"
+
+
+def normalize_app_event(message: dict[str, Any], session_ref: str | None) -> list[Envelope]:
+    """Map App Server notifications/requests to Claude's shared UI kinds.
+
+    Private error text and account identifiers stay on the transport, not in
+    the envelope. The UI may display local command/file details for approval.
+    """
+    method = message.get("method", "")
+    p = message.get("params") or {}
+    ref = p.get("threadId") or session_ref
+
+    def env(kind: str, **data: Any) -> list[Envelope]:
+        return [Envelope("codex", ref, kind, data)]
+
+    if "id" in message and method:
+        request_id = message["id"]
+        if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
+            family = "command" if "commandExecution" in method else "file_change"
+            return env("approval_request", request_id=request_id, family=family,
+                       tool=family, item_id=p.get("itemId"), turn_id=p.get("turnId"),
+                       command=p.get("command") if family == "command" else None,
+                       cwd=p.get("cwd"), reason=p.get("reason"),
+                       available_decisions=p.get("availableDecisions"))
+        if method == "mcpServer/elicitation/request":
+            return env("mcp_elicitation", request_id=request_id, server=p.get("serverName"),
+                       mode=p.get("mode"), turn_id=p.get("turnId"))
+        if method in {"tool/requestUserInput", "item/tool/requestUserInput"}:
+            return env("connector_approval_request", request_id=request_id,
+                       turn_id=p.get("turnId"), family="tool_input")
+        return env("approval_request", request_id=request_id, family="permissions_or_unknown",
+                   turn_id=p.get("turnId"))
+    if method == "item/agentMessage/delta":
+        return env("text_delta", text=p.get("delta", ""))
+    if method in {"item/reasoning/summaryTextDelta", "item/reasoning/textDelta", "item/reasoning/summaryPartAdded"}:
+        return env("thinking_delta")
+    if method in {"item/started", "item/completed"}:
+        item = p.get("item") or {}
+        typ = item.get("type")
+        if typ in {"commandExecution", "fileChange", "mcpToolCall", "webSearch", "collabToolCall"}:
+            return env("tool_started" if method == "item/started" else "tool_finished",
+                       tool=typ, tool_use_id=item.get("id"),
+                       is_error=item.get("status") in {"failed", "declined"} if method == "item/completed" else False)
+        return []
+    if method == "thread/started":
+        thread = p.get("thread") or {}
+        return [Envelope("codex", thread.get("id") or ref, "session_started", {})]
+    if method == "turn/completed":
+        turn = p.get("turn") or {}
+        error = turn.get("error") or {}
+        info = error.get("codexErrorInfo") or {}
+        return env("turn_finished", ok=turn.get("status") == "completed",
+                   subtype=turn.get("status"), terminal_reason=_failure_kind(error),
+                   api_error_status=info.get("httpStatusCode") if isinstance(info, dict) else None)
+    if method == "account/rateLimits/updated":
+        limits = p.get("rateLimits") or {}
+        primary = limits.get("primary") or {}
+        return env("rate_limit", status="rejected" if limits.get("rateLimitReachedType") else "allowed",
+                   type=limits.get("limitId"), used_percent=primary.get("usedPercent"),
+                   resets_at=primary.get("resetsAt"))
+    if method == "account/updated":
+        status = env("account_status", auth_mode=p.get("authMode"), plan_category=p.get("planType"))
+        if p.get("authMode") != "chatgpt":
+            status += env("runtime_error", category="auth")
+        return status
+    if method == "error":
+        return env("runtime_error", category=_failure_kind(p.get("error")))
+    if method in {"host/disconnected", "host/protocolError"}:
+        return env("process_exited" if method == "host/disconnected" else "runtime_error",
+                   exit_code=p.get("exitCode") if method == "host/disconnected" else None,
+                   category="connection")
+    if method in {"warning", "configWarning", "model/rerouted", "turn/plan/updated"}:
+        return env("notice", subtype=method)
+    return []
+
+
 class CodexRuntime:
     """A minimal UI-facing slice. The host must service approvals while a turn runs."""
 
@@ -156,6 +282,9 @@ class CodexRuntime:
         self.account: dict[str, Any] | None = None
         self.active_turn_id: str | None = None
         self._approvals: dict[int | str, str] = {}
+        self._ui_events: queue.Queue[Envelope] = queue.Queue()
+        self.workspace: Path | None = None
+        self.approval_mode = "ask_every_edit"
 
     def initialize(self) -> dict[str, Any]:
         result = self.transport.request("initialize", {"clientInfo": {
@@ -189,23 +318,43 @@ class CodexRuntime:
         return {"planCategory": account.get("planType"), "models": list(self.models.values()),
                 "rateLimits": self.transport.request("account/rateLimits/read")}
 
-    def open_thread(self, workspace: Path, *, writable: bool = False) -> str:
+    def open_thread(self, workspace: Path, *, approval_mode: str = "ask_every_edit",
+                    trusted_folders: TrustedFolderStore | None = None) -> str:
         if not self.account or self.account.get("type") != "chatgpt":
             raise AppServerError("ChatGPT account has not been verified")
         workspace = workspace.resolve(strict=True)
         if not workspace.is_dir():
             raise ValueError("Workspace must be a directory")
+        self.set_approval_mode(approval_mode, workspace, trusted_folders)
         stored = self.store.get(workspace)
         if stored:
-            result = self.transport.request("thread/resume", {"threadId": stored})
+            result = self.transport.request("thread/resume", {
+                "threadId": stored, "cwd": str(workspace),
+                "sandbox": self._sandbox_name(), "approvalPolicy": "onRequest",
+            })
         else:
             result = self.transport.request("thread/start", {
-                "cwd": str(workspace), "sandbox": "workspaceWrite" if writable else "readOnly",
+                "cwd": str(workspace), "sandbox": self._sandbox_name(),
                 "approvalPolicy": "onRequest",
             })
         self.thread_id = result["thread"]["id"]
         self.store.put(workspace, self.thread_id)
         return self.thread_id
+
+    def set_approval_mode(self, mode: str, workspace: Path,
+                          trusted_folders: TrustedFolderStore | None) -> None:
+        if self.active_turn_id:
+            raise AppServerError("Cannot change approval mode during an active turn")
+        if mode not in {"ask_every_edit", "auto_accept_trusted"}:
+            raise ValueError("Unsupported approval mode")
+        workspace = workspace.resolve(strict=True)
+        if mode == "auto_accept_trusted" and (trusted_folders is None or not trusted_folders.is_trusted(workspace)):
+            raise AppServerError("Explicitly trust this folder before enabling automatic edits")
+        self.workspace = workspace
+        self.approval_mode = mode
+
+    def _sandbox_name(self) -> str:
+        return "workspaceWrite" if self.approval_mode == "auto_accept_trusted" else "readOnly"
 
     def start_turn(self, text: str, model: str, effort: str | None = None) -> dict[str, Any]:
         if not self.thread_id:
@@ -215,7 +364,12 @@ class CodexRuntime:
         supported = {entry["reasoningEffort"] for entry in self.models[model].get("supportedReasoningEfforts", [])}
         if effort and effort not in supported:
             raise ValueError("Reasoning effort is absent from this model's catalog entry")
-        params: dict[str, Any] = {"threadId": self.thread_id, "input": [{"type": "text", "text": text}], "model": model}
+        assert self.workspace is not None
+        params: dict[str, Any] = {"threadId": self.thread_id, "input": [{"type": "text", "text": text}], "model": model,
+                                  "approvalPolicy": "onRequest", "cwd": str(self.workspace),
+                                  "sandboxPolicy": {"type": self._sandbox_name()}}
+        if self.approval_mode == "auto_accept_trusted":
+            params["sandboxPolicy"].update({"writableRoots": [str(self.workspace)], "networkAccess": False})
         if effort:
             params["effort"] = effort
         result = self.transport.request("turn/start", params)
@@ -232,35 +386,36 @@ class CodexRuntime:
         return self.transport.request("turn/interrupt", {"threadId": self.thread_id,
                                                          "turnId": self.active_turn_id})
 
-    def next_event(self, timeout: float | None = None) -> dict[str, Any]:
-        message = self.transport.events.get(timeout=timeout)
+    def next_event(self, timeout: float | None = None) -> Envelope:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            try:
+                return self._ui_events.get_nowait()
+            except queue.Empty:
+                pass
+            remaining = None if deadline is None else max(0, deadline - time.monotonic())
+            message = self.transport.events.get(timeout=remaining)
+            event = self._process_message(message)
+            if event is not None:
+                return event
+
+    def _process_message(self, message: dict[str, Any]) -> Envelope | None:
         method = message.get("method", "")
         params = message.get("params", {})
-        base = {"provider": "codex", "threadId": params.get("threadId", self.thread_id), "nativeMethod": method}
         if "id" in message and "method" in message:
             self._approvals[message["id"]] = method
-            return {**base, "kind": "approval_required", "requestId": message["id"], "details": params}
-        if method == "item/agentMessage/delta":
-            return {**base, "kind": "text_delta", "text": params.get("delta", ""), "turnId": params.get("turnId")}
-        if method in {"item/started", "item/updated", "item/completed"}:
-            return {**base, "kind": "item", "phase": method.split("/")[1], "item": params.get("item"),
-                    "turnId": params.get("turnId")}
         if method == "turn/completed":
             turn = params.get("turn", {})
             if turn.get("id") == self.active_turn_id:
                 self.active_turn_id = None
-            return {**base, "kind": "turn_completed", "turn": turn, "status": turn.get("status"),
-                    "error": turn.get("error"), "failureKind": self._failure_kind(turn.get("error"))}
-        if method == "error":
-            return {**base, "kind": "runtime_error", "details": params,
-                    "failureKind": self._failure_kind(params.get("error"))}
-        if method in {"account/rateLimits/updated", "account/updated"}:
-            if method == "account/updated" and params.get("authMode") != "chatgpt":
-                self.account = None
-            return {**base, "kind": "account_status", "details": params}
-        if method in {"host/disconnected", "host/protocolError", "warning", "configWarning"}:
-            return {**base, "kind": "runtime_error", "details": params}
-        return {**base, "kind": "activity", "details": params}
+        if method == "account/updated" and params.get("authMode") != "chatgpt":
+            self.account = None
+        if method == "serverRequest/resolved":
+            self._approvals.pop(params.get("requestId"), None)
+        envelopes = normalize_app_event(message, self.thread_id)
+        for extra in envelopes[1:]:
+            self._ui_events.put(extra)
+        return envelopes[0] if envelopes else None
 
     def decide_approval(self, request_id: int | str, decision: str) -> None:
         method = self._approvals.get(request_id)
@@ -270,18 +425,5 @@ class CodexRuntime:
             raise ValueError("Unsupported approval decision")
         self.transport.answer(request_id, {"decision": decision})
         del self._approvals[request_id]
-
-    @staticmethod
-    def _failure_kind(error: dict[str, Any] | None) -> str | None:
-        if not error:
-            return None
-        info = error.get("codexErrorInfo") or {}
-        name = info if isinstance(info, str) else info.get("type", "")
-        status = info.get("httpStatusCode") if isinstance(info, dict) else None
-        if name == "UsageLimitExceeded":
-            return "limit"
-        if name == "Unauthorized" or status in {401, 403}:
-            return "auth"
-        if name in {"HttpConnectionFailed", "ResponseStreamConnectionFailed", "ResponseStreamDisconnected"}:
-            return "connection"
-        return "other"
+        self._ui_events.put(Envelope("codex", self.thread_id, "approval_decision",
+                                     {"request_id": request_id, "decision": decision}))

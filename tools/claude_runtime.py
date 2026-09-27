@@ -18,7 +18,7 @@ import re
 import shutil
 import subprocess
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
@@ -36,6 +36,7 @@ from claude_runtime_probe import (
     summarize_result,
     require_subscription,
 )
+from tools.runtime_events import Envelope
 
 
 PROVIDER = "claude"
@@ -61,16 +62,6 @@ PREFLIGHT_TIMEOUT_SECONDS = 60
 
 class RuntimeRefused(RuntimeError):
     """The adapter refused to start or act, with a machine-readable reason."""
-
-
-@dataclass(frozen=True)
-class Envelope:
-    """One provider-neutral UI event. `data` never holds credentials."""
-
-    provider: str
-    session_ref: str | None
-    kind: str
-    data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

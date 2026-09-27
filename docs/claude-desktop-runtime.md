@@ -50,9 +50,9 @@ discover → preflight → trust gate → spawn chat process → turns … → c
 
 ## Provider-neutral envelope
 
-`Envelope(provider, session_ref, kind, data)`. Codex's lane maps its app-server
-events onto the same kinds. `session_ref` stays each provider's native ID and
-is never translated.
+`Envelope(provider, session_ref, kind, data)` lives in
+`tools/runtime_events.py` and is imported by both adapters. `session_ref` stays
+each provider's native ID and is never translated.
 
 | stream-json input | envelope kind | data | UI |
 |---|---|---|---|
@@ -66,6 +66,31 @@ is never translated.
 | `system` `init` | `session_started` | `model`, `permission_mode`, `api_key_source` | header; alarm if `api_key_source` ≠ none |
 | `result` | `turn_finished` | `ok` (= `is_error is False`), `subtype`, `terminal_reason`, `api_error_status`, `permission_denials`, `models_served` | end of turn |
 | process EOF | `process_exited` | `exit_code` | "runtime stopped", with a resume button |
+
+Codex mapping added by the Codex lane (VLI-158/159):
+
+| App Server event | shared kind | data / UI |
+|---|---|---|
+| `item/agentMessage/delta` | `text_delta` | `text`; append |
+| reasoning delta or summary boundary | `thinking_delta` | content omitted; indicator only |
+| command, file, MCP, web or collaboration item `started` / `completed` | `tool_started` / `tool_finished` | `tool`, native `tool_use_id`, `is_error` |
+| command or file `requestApproval` | `approval_request` | `request_id`, `family`, command/cwd/reason when supplied; blocking |
+| host answer to an issued command/file approval | `approval_decision` | `request_id`, `decision`; host-side confirmation |
+| `turn/completed` | `turn_finished` | `ok`, `subtype`, `terminal_reason`, `api_error_status` |
+| `account/rateLimits/updated` | `rate_limit` | bucket, use percentage, reset timestamp |
+| `thread/started` | `session_started` | native Codex thread ID is `session_ref` |
+| `host/disconnected` | `process_exited` | exit code; offer resume |
+| warnings, reroute, plan update | `notice` | subtype |
+| `account/updated` | `account_status` | auth mode, plan category; never email/account ID |
+| upstream `error` or protocol failure | `runtime_error` | category only (`auth`, `limit`, `connection`, `other`) |
+| MCP elicitation / connector user-input request | `mcp_elicitation` / `connector_approval_request` | blocking; dedicated UI required |
+
+The last four kinds extend the original Claude table where Codex has a
+different observable control surface. Claude's lane can adopt them when it
+adds comparable account, runtime and connector events. Unknown App Server
+events are dropped. A Codex request outside the implemented command/file
+approval family stays blocked or causes interruption; the host never guesses
+an approval payload. Codex account and error envelopes omit raw service text.
 
 Rules:
 - **Turn verdict.** It comes from `is_error`, never from the exit code or `subtype`. An unknown model was observed returning `subtype: "success"`, `is_error: true`, 404 and exit code 1.
