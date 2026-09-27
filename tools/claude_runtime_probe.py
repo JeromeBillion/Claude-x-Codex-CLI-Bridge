@@ -8,14 +8,18 @@ menu the CLI offers this account, streaming, session resume, tool approvals,
 interrupt, mid-session model switching, rate-limit events and failure shapes.
 
 Safety rules the probe enforces rather than assumes:
-- API-key and alternate-provider variables are removed from every child
-  environment, and model turns run only after the CLI itself reports a
-  first-party Claude subscription login. Otherwise the probe stops before any
-  model call, so it can never bill an API key.
+- Child processes get an allowlisted environment only (OS, profile, locale,
+  proxy/CA and Claude config location); every API key, gateway, OAuth token,
+  provider switch and AWS / Google Cloud / Azure credential is dropped. Model
+  turns run only after the CLI itself reports a first-party claude.ai
+  subscription login with no API key source; otherwise the probe stops before
+  any model call, so it can never bill an API key or a cloud account.
 - A tool approval is granted only for a Write whose real target stays inside
   the throwaway probe directory; everything else is denied.
-- The report holds only allowlisted, pattern-checked fields, booleans and
-  counts. Model output, account e-mail, organization and IDs never reach it.
+- Every string in the report is a member of a finite public set (or a fixed
+  placeholder); the rest are booleans, bounded numbers and counts. Model
+  output, account e-mail, organization, IDs, paths and error text never
+  reach it, including on failure.
 """
 
 from __future__ import annotations
@@ -35,31 +39,114 @@ from typing import Any, Iterator, Sequence
 from uuid import uuid4
 
 
-# Environment variables that would make the CLI bill something other than the
-# signed-in subscription (API keys, gateways, or third-party providers).
-BILLING_ENV_VARS = (
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_BEDROCK_BASE_URL",
-    "ANTHROPIC_VERTEX_BASE_URL",
-    "ANTHROPIC_FOUNDRY_API_KEY",
-    "ANTHROPIC_FOUNDRY_BASE_URL",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_VERTEX",
-    "CLAUDE_CODE_USE_FOUNDRY",
-    "AWS_BEARER_TOKEN_BEDROCK",
-)
-# Plan labels the CLI reports for subscription logins; anything else ("Claude
-# API" included) means usage would not come out of a Claude plan.
+# ---------------------------------------------------------------------------
+# Child environment: a true allowlist.
+#
+# The probe hands its CLI children only the variables below: OS, profile and
+# locale plumbing, network proxy and CA settings, and the Claude config
+# location. Every other variable is dropped: API keys, gateway URLs, OAuth
+# tokens, provider switches, AWS / Google Cloud / Azure credentials, CI
+# tokens, NODE_OPTIONS and anything not yet invented. So no credential the
+# probe does not know about can reach the CLI.
+# ---------------------------------------------------------------------------
+ENV_ALLOWLIST = frozenset({
+    # Windows process basics and profile locations (the CLI reads its login from the profile).
+    "PATH", "PATHEXT", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "OS",
+    "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER",
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA",
+    "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "COMMONPROGRAMFILES",
+    "COMMONPROGRAMFILES(X86)", "USERNAME", "USERDOMAIN", "COMPUTERNAME", "PUBLIC",
+    "TEMP", "TMP",
+    # POSIX equivalents.
+    "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TERM",
+    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
+    # Locale and console encoding.
+    "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "PYTHONIOENCODING",
+    # Network reachability only; these route traffic, they do not pick a biller.
+    "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "ALL_PROXY",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE",
+    # Where the user's own Claude Code config and login live, and its Windows shell.
+    "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_GIT_BASH_PATH",
+})
+# Values the probe sets itself, overriding anything inherited.
+ENV_FORCED = {
+    "ENABLE_CLAUDEAI_MCP_SERVERS": "false",  # connectors are not what the probe measures
+    "DISABLE_AUTOUPDATER": "1",  # the probe must not change the CLI it is measuring
+}
+# Documented categories the allowlist removes (kept for tests and the reply;
+# the allowlist, not this list, is what enforces the rule).
+STRIPPED_CATEGORIES = {
+    "anthropic_api": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+                      "ANTHROPIC_CUSTOM_HEADERS", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL"),
+    "claude_code_tokens_and_switches": ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+                                        "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR", "CLAUDE_CODE_USE_BEDROCK",
+                                        "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+                                        "CLAUDE_CODE_SKIP_BEDROCK_AUTH", "CLAUDE_CODE_SKIP_VERTEX_AUTH",
+                                        "CLAUDE_CODE_SKIP_FOUNDRY_AUTH", "CLAUDE_CODE_API_KEY_HELPER_TTL_MS"),
+    "aws": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE",
+            "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_BEARER_TOKEN_BEDROCK", "AWS_CONFIG_FILE",
+            "AWS_SHARED_CREDENTIALS_FILE", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN"),
+    "google_cloud": ("GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT",
+                     "CLOUDSDK_CONFIG", "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE", "CLOUD_ML_REGION",
+                     "ANTHROPIC_VERTEX_PROJECT_ID", "VERTEX_REGION_CLAUDE_FABLE_5_1"),
+    "azure_foundry": ("AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET", "AZURE_TENANT_ID",
+                      "AZURE_CLIENT_CERTIFICATE_PATH", "AZURE_FEDERATED_TOKEN_FILE",
+                      "ANTHROPIC_FOUNDRY_API_KEY", "ANTHROPIC_FOUNDRY_RESOURCE", "IDENTITY_ENDPOINT",
+                      "IDENTITY_HEADER", "MSI_ENDPOINT", "MSI_SECRET"),
+    "other_llm_and_ci_tokens": ("OPENAI_API_KEY", "GITHUB_TOKEN", "GH_TOKEN", "NPM_TOKEN"),
+    "code_injection": ("NODE_OPTIONS", "NODE_PATH", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES"),
+}
+
+
+def child_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Build a child environment from the allowlist only (case-insensitive, for Windows)."""
+    source = dict(os.environ if base is None else base)
+    env = {name: value for name, value in source.items() if name.upper() in ENV_ALLOWLIST}
+    env.update(ENV_FORCED)
+    return env
+
+
+# ---------------------------------------------------------------------------
+# Output: every reported string is a member of a finite public set.
+#
+# A CLI-origin value is printed only if it is exactly one of the public
+# values below. Anything else becomes a fixed placeholder, or for model IDs a
+# family bucket such as "unlisted-claude-opus" that keeps no part of the
+# original string. No regex shape check, no hashing and no truncation: a
+# short private value that merely looks like an enum is never echoed.
+# ---------------------------------------------------------------------------
+UNLISTED = "unlisted"
+AUTH_METHODS = frozenset({"claude.ai", "oauth_token", "api_key", "api_key_helper", "third_party", "none"})
+API_PROVIDERS = frozenset({"firstParty", "bedrock", "vertex", "foundry"})
+# Plan labels the CLI reports. Only the first four mean usage comes out of a Claude plan.
 SUBSCRIPTION_PLANS = frozenset({"Claude Pro", "Claude Max", "Claude Team", "Claude Enterprise"})
-# Fable turns can bill usage credits without a consent prompt in -p mode.
-CREDIT_BILLED_MODELS = re.compile(r"fable|best", re.IGNORECASE)
+PLANS = SUBSCRIPTION_PLANS | {"Claude API"}
+PERMISSION_MODES = frozenset({"default", "manual", "acceptEdits", "plan", "auto", "dontAsk",
+                              "bypassPermissions"})
 EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
-TOKEN = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
-MODEL_ID = re.compile(r"^[a-z0-9][a-z0-9.\-]{0,62}(\[1m\])?$")
-LABEL = re.compile(r"^[A-Za-z0-9 ().\-]{1,40}$")
-VERSION = re.compile(r"\d+\.\d+\.\d+")
+MODEL_ALIASES = frozenset({"default", "best", "fable", "opus", "sonnet", "haiku", "opusplan"})
+MODEL_IDS = frozenset({
+    "claude-fable-5-1", "claude-fable-5", "claude-opus-5-5", "claude-opus-4-8", "claude-opus-4-7",
+    "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5",
+    "claude-haiku-4-5", "claude-haiku-4-5-20251001",
+})
+MODEL_FAMILIES = ("fable", "opus", "sonnet", "haiku")
+DISPLAY_NAMES = frozenset({"Default (recommended)", "Default", "Best", "Fable", "Opus", "Sonnet",
+                           "Haiku", "Opus Plan", "Opus Plan Mode"})
+RATE_LIMIT_STATUSES = frozenset({"allowed", "allowed_warning", "rejected"})
+RATE_LIMIT_TYPES = frozenset({"five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet",
+                              "seven_day_fable", "overage"})
+NOTICE_SUBTYPES = frozenset({"model_refusal_fallback", "api_retry"})
+NOTICE_TRIGGERS = frozenset({"refusal", "rate_limited", "overloaded", "unavailable", "server_denied"})
+RESULT_SUBTYPES = frozenset({"success", "error_max_turns", "error_during_execution",
+                             "error_max_budget_usd", "error_max_structured_output_retries"})
+TERMINAL_REASONS = frozenset({"completed", "aborted_streaming", "aborted_tools", "api_error",
+                              "max_turns", "blocking_limit", "turn_setup_failed",
+                              "structured_output_retry_exhausted", "tool_deferred_unavailable"})
+# The only models the probe itself will spend turns on: the cheap plan models.
+PROBE_MODELS = frozenset({"haiku", "sonnet", "claude-haiku-4-5", "claude-sonnet-5"})
+VERSION = re.compile(r"(\d{1,4})\.(\d{1,4})\.(\d{1,5})")
 EVENT_TIMEOUT_SECONDS = 180
 RECALL_WORD = "TANGERINE"
 
@@ -68,29 +155,52 @@ class ProbeRefused(RuntimeError):
     """The probe stopped before any model call to protect billing or privacy."""
 
 
-def safe(value: Any, pattern: re.Pattern[str]) -> Any:
-    """Keep a CLI-reported string only if it matches the expected shape."""
-    if value is None or isinstance(value, bool):
-        return value
-    if isinstance(value, str) and pattern.fullmatch(value):
-        return value
-    return "<unrecognized>"
+def enum(value: Any, allowed: frozenset[str]) -> str | None:
+    """Echo a value only if it is exactly a known public enum member."""
+    if value is None:
+        return None
+    return value if isinstance(value, str) and value in allowed else UNLISTED
 
 
-def safe_number(value: Any) -> float | int | None:
-    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+def model_name(value: Any) -> str | None:
+    """Known public model IDs and aliases pass; anything else keeps only its family."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return UNLISTED
+    base, suffix = (value[:-4], "[1m]") if value.endswith("[1m]") else (value, "")
+    if base in MODEL_IDS or base in MODEL_ALIASES:
+        return base + suffix
+    for family in MODEL_FAMILIES:
+        if base.startswith(f"claude-{family}-"):
+            return f"unlisted-claude-{family}"
+    return UNLISTED
 
 
-def child_env(base: dict[str, str] | None = None) -> dict[str, str]:
-    """Copy the environment without anything that could route billing elsewhere."""
-    env = dict(os.environ if base is None else base)
-    blocked = {name.upper() for name in BILLING_ENV_VARS}
-    for name in list(env):
-        if name.upper() in blocked:
-            del env[name]
-    # Keep claude.ai connectors out of the probe; they are not what it measures.
-    env["ENABLE_CLAUDEAI_MCP_SERVERS"] = "false"
-    return env
+def utilization(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 10:
+        return None
+    return round(float(value), 2)
+
+
+def epoch_seconds(value: Any) -> int | None:
+    """Reset times are public clock values; anything outside 2020–2096 is dropped."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value) if 1_577_836_800 <= value <= 4_000_000_000 else None
+
+
+def http_status(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599 else None
+
+
+def count(value: Any) -> int:
+    return min(len(value), 10_000) if isinstance(value, (list, dict)) else 0
+
+
+def version_string(text: Any) -> str | None:
+    match = VERSION.search(text) if isinstance(text, str) else None
+    return ".".join(str(int(part)) for part in match.groups()) if match else None
 
 
 def confined_write_target(tool_input: Any, root: Path) -> Path | None:
@@ -119,21 +229,22 @@ def confined_write_target(tool_input: Any, root: Path) -> Path | None:
 
 
 def summarize_auth(raw: Any, exit_code: int) -> dict[str, Any]:
+    # `auth status` also returns email, orgId, orgName and config paths; none are read.
     raw = raw if isinstance(raw, dict) else {}
     return {
         "logged_in": raw.get("loggedIn") is True,
-        "auth_method": safe(raw.get("authMethod"), TOKEN),
-        "api_provider": safe(raw.get("apiProvider"), TOKEN),
-        "exit_code": exit_code,
+        "auth_method": enum(raw.get("authMethod"), AUTH_METHODS),
+        "api_provider": enum(raw.get("apiProvider"), API_PROVIDERS),
+        "api_key_source_present": raw.get("apiKeySource") not in (None, "none"),
+        "exit_code": exit_code if isinstance(exit_code, int) and -255 <= exit_code <= 255 else None,
     }
 
 
 def summarize_account(account: Any) -> dict[str, Any]:
     account = account if isinstance(account, dict) else {}
-    plan = account.get("subscriptionType")
     return {
-        "plan": plan if plan in SUBSCRIPTION_PLANS else safe(plan, LABEL),
-        "api_provider": safe(account.get("apiProvider"), TOKEN),
+        "plan": enum(account.get("subscriptionType"), PLANS),
+        "api_provider": enum(account.get("apiProvider"), API_PROVIDERS),
         "api_key_source_present": account.get("apiKeySource") not in (None, "none"),
     }
 
@@ -145,41 +256,42 @@ def summarize_models(models: Any) -> list[dict[str, Any]]:
             continue
         levels = model.get("supportedEffortLevels")
         summary.append({
-            "value": safe(model.get("value"), MODEL_ID),
-            "resolved_model": safe(model.get("resolvedModel"), MODEL_ID),
-            "display_name": safe(model.get("displayName"), LABEL),
-            "effort_levels": [level for level in levels if level in EFFORT_LEVELS]
+            "value": model_name(model.get("value")),
+            "resolved_model": model_name(model.get("resolvedModel")),
+            "display_name": enum(model.get("displayName"), DISPLAY_NAMES),
+            "effort_levels": sorted({level for level in levels if level in EFFORT_LEVELS})
             if isinstance(levels, list) else [],
         })
-    return summary
+    return summary[:50]
 
 
 def summarize_rate_limit(info: Any) -> dict[str, Any]:
     info = info if isinstance(info, dict) else {}
-    summary = {
-        "status": safe(info.get("status"), TOKEN),
-        "type": safe(info.get("rateLimitType"), TOKEN),
-        "overage_status": safe(info.get("overageStatus"), TOKEN),
+    summary: dict[str, Any] = {
+        "status": enum(info.get("status"), RATE_LIMIT_STATUSES),
+        "type": enum(info.get("rateLimitType"), RATE_LIMIT_TYPES),
+        "overage_status": enum(info.get("overageStatus"), RATE_LIMIT_STATUSES),
         "using_overage": info.get("isUsingOverage") is True,
     }
     windows = info.get("unifiedWindows")
     if isinstance(windows, dict):
+        # Only known window names become keys; an unknown key is never echoed.
         summary["windows"] = {
-            safe(name, TOKEN): {
-                "utilization": safe_number(window.get("utilization")),
-                "resets_at": safe_number(window.get("resetsAt")),
-            }
-            for name, window in windows.items() if isinstance(window, dict)
+            name: {"utilization": utilization(window.get("utilization")),
+                   "resets_at": epoch_seconds(window.get("resetsAt"))}
+            for name, window in windows.items()
+            if name in RATE_LIMIT_TYPES and isinstance(window, dict)
         }
+        summary["unlisted_windows"] = sum(1 for name in windows if name not in RATE_LIMIT_TYPES)
     return summary
 
 
 def summarize_notice(event: dict[str, Any]) -> dict[str, Any]:
     return {
-        "subtype": safe(event.get("subtype"), TOKEN),
-        "original_model": safe(event.get("original_model"), MODEL_ID),
-        "fallback_model": safe(event.get("fallback_model"), MODEL_ID),
-        "trigger": safe(event.get("trigger"), TOKEN),
+        "subtype": enum(event.get("subtype"), NOTICE_SUBTYPES),
+        "original_model": model_name(event.get("original_model")),
+        "fallback_model": model_name(event.get("fallback_model")),
+        "trigger": enum(event.get("trigger"), NOTICE_TRIGGERS),
     }
 
 
@@ -193,12 +305,11 @@ def summarize_result(result: Any) -> dict[str, Any]:
     usage = result.get("modelUsage")
     return {
         "ok": result.get("is_error") is False,
-        "subtype": safe(result.get("subtype"), TOKEN),
-        "terminal_reason": safe(result.get("terminal_reason"), TOKEN),
-        "api_error_status": safe_number(result.get("api_error_status")),
-        "permission_denials": len(result.get("permission_denials") or []),
-        "models_served": sorted(safe(name, MODEL_ID) for name in usage)
-        if isinstance(usage, dict) else [],
+        "subtype": enum(result.get("subtype"), RESULT_SUBTYPES),
+        "terminal_reason": enum(result.get("terminal_reason"), TERMINAL_REASONS),
+        "api_error_status": http_status(result.get("api_error_status")),
+        "permission_denials": count(result.get("permission_denials")),
+        "models_served": sorted({model_name(name) for name in usage}) if isinstance(usage, dict) else [],
     }
 
 
@@ -207,11 +318,15 @@ def result_text(result: Any) -> str:
     return text if isinstance(text, str) else ""
 
 
+class CliNotFound(RuntimeError):
+    """No `claude` executable on PATH."""
+
+
 def resolve_claude(command: str) -> list[str]:
     # On Windows `claude` may be claude.exe (native install) or a claude.cmd npm shim.
     resolved = shutil.which(command)
     if not resolved:
-        raise SystemExit(f"Command not found on PATH: {command}")
+        raise CliNotFound()
     return [resolved]
 
 
@@ -365,19 +480,20 @@ def require_subscription(auth: dict[str, Any], account: dict[str, Any]) -> None:
     """Refuse model turns unless the CLI itself reports a subscription login."""
     if not auth["logged_in"] or auth["exit_code"] != 0:
         raise ProbeRefused("not_logged_in")
+    if auth["auth_method"] != "claude.ai":
+        raise ProbeRefused("not_a_claude_ai_login")
     if auth["api_provider"] != "firstParty" or account["api_provider"] != "firstParty":
         raise ProbeRefused("not_first_party")
     if account["plan"] not in SUBSCRIPTION_PLANS:
         raise ProbeRefused("not_a_subscription_plan")
-    if account["api_key_source_present"]:
+    if auth["api_key_source_present"] or account["api_key_source_present"]:
         raise ProbeRefused("api_key_source_present")
 
 
 def probe(executable: Sequence[str], model: str, turns: bool) -> dict[str, Any]:
     report: dict[str, Any] = {}
     version = run_cli(executable, ["--version"], timeout=30)
-    match = VERSION.search(version.stdout)
-    report["version"] = match.group(0) if match else None
+    report["version"] = version_string(version.stdout)
     status = run_cli(executable, ["auth", "status", "--json"], timeout=30)
     try:
         raw_auth = json.loads(status.stdout)
@@ -393,14 +509,14 @@ def probe(executable: Sequence[str], model: str, turns: bool) -> dict[str, Any]:
         init = initialize(session)
         report["account"] = summarize_account(init.get("account"))
         report["models"] = summarize_models(init.get("models"))
-        report["permission_mode"] = safe(init.get("current_permission_mode"), TOKEN)
-        report["commands"] = len(init.get("commands") or [])
+        report["permission_mode"] = enum(init.get("current_permission_mode"), PERMISSION_MODES)
+        report["commands"] = count(init.get("commands"))
         if not turns:
             session.close()
             return report
         try:
-            if CREDIT_BILLED_MODELS.search(model):
-                raise ProbeRefused("model_may_bill_usage_credits")
+            if model not in PROBE_MODELS:
+                raise ProbeRefused("model_not_allowed_for_probe")
             require_subscription(report["auth"], report["account"])
         except ProbeRefused as refusal:
             session.close()
@@ -445,24 +561,37 @@ def probe(executable: Sequence[str], model: str, turns: bool) -> dict[str, Any]:
                                    "--no-session-persistence", "--model", "not-a-real-model"],
                       cwd=cwd, stdin="Reply OK", timeout=120)
         try:
-            report["unknown_model"] = {"exit_code": bad.returncode,
+            report["unknown_model"] = {"exit_code": summarize_auth({}, bad.returncode)["exit_code"],
                                        **summarize_result(json.loads(bad.stdout))}
         except json.JSONDecodeError:
-            report["unknown_model"] = {"exit_code": bad.returncode, "parse_error": True}
+            report["unknown_model"] = {"exit_code": summarize_auth({}, bad.returncode)["exit_code"],
+                                       "parse_error": True}
     return report
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--claude-command", default="claude")
-    parser.add_argument("--model", default="haiku",
+    parser.add_argument("--model", default="haiku", choices=sorted(PROBE_MODELS),
                         help="model for the probe turns (default: haiku, the cheapest; "
-                             "Fable is refused because it can bill usage credits)")
+                             "Fable and Opus are not offered)")
     parser.add_argument("--turns", action="store_true",
                         help="also run probes that make small model calls on your subscription")
     args = parser.parse_args(argv)
-    report = probe(resolve_claude(args.claude_command), args.model, args.turns)
+    # Errors are reported as a fixed code only: no exception text, paths or CLI output.
+    try:
+        report = probe(resolve_claude(args.claude_command), args.model, args.turns)
+    except CliNotFound:
+        report = {"error": "claude_not_found"}
+    except subprocess.TimeoutExpired:
+        report = {"error": "cli_timeout"}
+    except OSError:
+        report = {"error": "cli_spawn_failed"}
+    except Exception:  # noqa: BLE001 - anything else still yields only a fixed code
+        report = {"error": "internal_error"}
     print(json.dumps(report, indent=2))
+    if "error" in report:
+        return 3
     return 2 if "turns_refused" in report else 0
 
 

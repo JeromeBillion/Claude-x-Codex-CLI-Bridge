@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import sys
@@ -13,6 +14,7 @@ TOOLS_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS_DIR))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import claude_runtime_probe as probe_module  # noqa: E402
 from claude_runtime import (  # noqa: E402
     ClaudeSession,
     Envelope,
@@ -21,10 +23,23 @@ from claude_runtime import (  # noqa: E402
     build_handoff,
     discover_claude,
     normalize,
+    session_env,
     parse_version,
     preflight,
     version_status,
 )
+
+# Variables that pick or pay Claude's biller: removed from every child, sessions included.
+SESSION_PLANTED = {
+    "ANTHROPIC_API_KEY": "PLANTED-1", "anthropic_auth_token": "PLANTED-2", "ANTHROPIC_BASE_URL": "PLANTED-3",
+    "ANTHROPIC_VERTEX_PROJECT_ID": "PLANTED-4", "CLAUDE_CODE_USE_BEDROCK": "PLANTED-5",
+    "CLAUDE_CODE_USE_VERTEX": "PLANTED-6", "CLAUDE_CODE_OAUTH_TOKEN": "PLANTED-7",
+    "CLAUDE_CODE_SKIP_BEDROCK_AUTH": "PLANTED-8", "AWS_BEARER_TOKEN_BEDROCK": "PLANTED-9",
+    "CLOUD_ML_REGION": "PLANTED-10", "VERTEX_REGION_CLAUDE_OPUS_5_5": "PLANTED-11", "NODE_OPTIONS": "PLANTED-12",
+}
+# General cloud credentials: dropped from preflight (allowlist); kept in chat sessions for the user's own work.
+PREFLIGHT_ONLY_PLANTED = {"AWS_PROFILE": "PLANTED-dev", "AWS_SECRET_ACCESS_KEY": "PLANTED-13",
+                          "GOOGLE_APPLICATION_CREDENTIALS": "PLANTED-14", "AZURE_CLIENT_SECRET": "PLANTED-15"}
 
 FAKE_CLI = [sys.executable, str(Path(__file__).resolve().parent / "fake_claude_cli.py")]
 
@@ -95,8 +110,13 @@ class SessionTests(unittest.TestCase):
         self.root = Path(self._tmp.name)
         self.log = self.root / "calls.jsonl"
         self.env = patch.dict(os.environ, {"FAKE_CLAUDE_LOG": str(self.log), "FAKE_PLAN": "Claude Max",
-                                           "ANTHROPIC_API_KEY": "sk-ant-PLANTED-KEY"})
+                                           **SESSION_PLANTED, **PREFLIGHT_ONLY_PLANTED})
         self.env.start()
+        # Test plumbing for the fake CLI is the only addition to the preflight allowlist.
+        self.allow = patch.object(probe_module, "ENV_ALLOWLIST",
+                                  probe_module.ENV_ALLOWLIST | {"FAKE_CLAUDE_LOG", "FAKE_PLAN"})
+        self.allow.start()
+        self.addCleanup(self.allow.stop)
         self.trust = TrustStore(self.root / "trust.json")
         self.trust.trust(self.root)
         self.pre = preflight(FAKE_CLI)
@@ -127,7 +147,7 @@ class SessionTests(unittest.TestCase):
         script.write_text(
             "import json, sys, time\n"
             "if '--version' in sys.argv: print('2.1.283')\n"
-            "elif 'auth' in sys.argv: print(json.dumps({'loggedIn': True, 'apiProvider': 'firstParty'}))\n"
+            "elif 'auth' in sys.argv: print(json.dumps({'loggedIn': True, 'authMethod': 'claude.ai', 'apiProvider': 'firstParty'}))\n"
             "else: time.sleep(30)\n", encoding="utf-8")
         started = time.monotonic()
         with patch("claude_runtime.PREFLIGHT_TIMEOUT_SECONDS", 1), self.assertRaises(RuntimeRefused) as caught:
@@ -183,14 +203,27 @@ class SessionTests(unittest.TestCase):
         argv = [line for line in self.log.read_text(encoding="utf-8").splitlines() if "--resume" in line]
         self.assertTrue(argv)
 
-    def test_no_child_ever_sees_the_planted_api_key(self) -> None:
+    def test_no_billing_variable_reaches_any_child(self) -> None:
         session = self.open()
         session.send("Reply OK")
         list(session.events())
         session.close()
-        text = self.log.read_text(encoding="utf-8")
-        self.assertNotIn("ANTHROPIC_API_KEY", text)
-        self.assertIn('"billing_vars_seen": []', text)
+        calls = [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+        spawned = [call for call in calls if "argv" in call]
+        preflight_calls = [c for c in spawned if "--tools" in c["argv"] or c["argv"][:1] in (["--version"], ["auth"])]
+        session_calls = [c for c in spawned if "--permission-prompt-tool" in c["argv"]]
+        self.assertTrue(preflight_calls and session_calls)
+        for call in spawned:
+            names = {name.upper() for name in call["env_names"]}
+            self.assertEqual(names & {name.upper() for name in SESSION_PLANTED}, set(), call["argv"])
+        for call in preflight_calls:
+            self.assertEqual(call["env_values_with_planted"], [], call["argv"])
+        # Chat sessions keep the user's own dev tooling credentials; they cannot pick Claude's biller.
+        self.assertIn("AWS_PROFILE", session_calls[0]["env_names"])
+
+    def test_session_env_blocks_every_billing_route(self) -> None:
+        env = session_env({**SESSION_PLANTED, "PATH": "/bin", "JAVA_HOME": "/j", "AWS_PROFILE": "dev"})
+        self.assertEqual(set(env) - {"PATH", "JAVA_HOME", "AWS_PROFILE", "DISABLE_AUTOUPDATER"}, set())
 
 
 class HandoffTests(unittest.TestCase):
