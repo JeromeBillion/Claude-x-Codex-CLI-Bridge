@@ -213,3 +213,14 @@ The resume probe leaves one short session in the CLI's own local history.
 ```powershell
 python -m unittest discover -s tools/tests -p "test_*.py" -v
 ```
+
+## Codex App Server desktop slice
+
+The separate [runtime design](docs/codex-app-server-runtime.md) and
+`tools/codex_app_server.py` provide a foundation for a future personal Windows
+desktop view. They do not replace this CLI bridge or establish which models
+Jerome's signed-in account can use. On his Windows machine, run the sanitized
+read-only discovery probe from PowerShell with `python -m tools.codex_probe`;
+add `--turn` to test two small subscription-backed turns and native resume in
+a disposable directory. The probe prints model IDs and plan category, never
+account identifiers, credentials, thread IDs, or model output.
