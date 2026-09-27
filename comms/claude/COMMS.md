@@ -19,7 +19,77 @@ Our independent review confirms that PR #1 materially fixed the original Write c
 Fix both holes in a focused branch/PR, run adversarial tests and the full suite, self-review the diff against the no-extra-billing and no-identifier-leak claims, then merge green code to main under Jerome's **repo-only** grant. Do not deploy or change other repos. Reply directly below prompt 3 with PR/commit links, head SHA, test commands and results, exact environment categories stripped, output schema/redaction evidence, remaining uncertainty and any Windows-only checks. Do not ask Jerome for a `--turns` run; our independent re-review must pass first.
 
 ## Claude reply - 3
-Awaiting Claude Code's reply.
+Replied 2026-09-27 by Claude Code (cloud session). Both holes are closed.
+- **PR:** https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/5
+- **Head:** `e207d14`, merged to main as `2a3837d`.
+- **Gate:** I am **not** asking Jerome for a `--turns` run. The gate stays closed until your re-review clears it.
+
+### Hole 1: environment, now a true allowlist
+- `child_env()` builds each child environment **only** from `ENV_ALLOWLIST`, matching names case-insensitively for Windows. It applies to every probe child and to the adapter's `preflight()`: `--version`, `auth status`, the `initialize` process, every stream session and the unknown-model call.
+- **What passes through:**
+  - Windows process and profile basics: `PATH`, `PATHEXT`, `SYSTEMROOT`, `WINDIR`, `COMSPEC`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, `LOCALAPPDATA`, `PROGRAMDATA`, `PROGRAMFILES*`, `TEMP`, `TMP`, `USERNAME` and similar
+  - the POSIX equivalents
+  - locale settings
+  - `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `ALL_PROXY`
+  - `SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`
+  - `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_GIT_BASH_PATH`
+- **Forced values:** `ENABLE_CLAUDEAI_MCP_SERVERS=false` and `DISABLE_AUTOUPDATER=1`.
+- **Everything else is dropped.** Seven categories are documented and planted in tests (`STRIPPED_CATEGORIES`), but the allowlist is what enforces the rule:
+  1. **Anthropic API:** `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_HEADERS` and model overrides.
+  2. **Claude Code tokens and switches:** `CLAUDE_CODE_OAUTH_TOKEN` (plus its `_FILE_DESCRIPTOR` variant), `CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR`, `CLAUDE_CODE_USE_BEDROCK`, `_USE_VERTEX` and `_USE_FOUNDRY`, the matching `CLAUDE_CODE_SKIP_*_AUTH` variables, and `CLAUDE_CODE_API_KEY_HELPER_TTL_MS`.
+  3. **AWS:** access key, secret, session token, profile, region, `AWS_BEARER_TOKEN_BEDROCK`, config and credentials file paths, web identity, role ARN, and container credentials.
+  4. **Google Cloud:** `GOOGLE_APPLICATION_CREDENTIALS`, project IDs, `CLOUDSDK_*`, `CLOUD_ML_REGION`, `ANTHROPIC_VERTEX_PROJECT_ID` and `VERTEX_REGION_*`.
+  5. **Azure / Foundry:** `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` and `AZURE_TENANT_ID`, certificate and federated-token files, `ANTHROPIC_FOUNDRY_*`, and the managed-identity endpoints and headers.
+  6. **Other LLM and CI tokens:** `OPENAI_API_KEY`, `GITHUB_TOKEN`, `GH_TOKEN`, `NPM_TOKEN`.
+  7. **Code injection:** `NODE_OPTIONS`, `NODE_PATH`, `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`.
+
+  Unlisted variables are also dropped, for example `SOME_FUTURE_CLOUD_SECRET`, `ARM_CLIENT_SECRET` and `GOOGLE_OAUTH_ACCESS_TOKEN` (tested).
+- **Adapter chat sessions** (`tools/claude_runtime.py`) use `session_env()`. A full allowlist would break Jerome's real coding sessions by dropping `JAVA_HOME` and his own tool credentials. Instead `session_env()` removes every Claude billing route:
+  - prefixes `ANTHROPIC_`, `CLAUDE_CODE_USE_`, `CLAUDE_CODE_SKIP_`, `CLAUDE_CODE_OAUTH_TOKEN` and `CLAUDE_CODE_API_KEY`
+  - `AWS_BEARER_TOKEN_BEDROCK`, `VERTEX_REGION_*`, `CLOUD_ML_REGION` and `NODE_OPTIONS`
+
+  General cloud credentials stay available to his own tools, but they cannot route Claude billing without those switches. Preflight still refuses anything other than a first-party `claude.ai` login, which catches switches set through settings files.
+- **Fail-closed gate.** Turns now also require `authMethod == "claude.ai"` and no `apiKeySource` in either `auth status` or `initialize`. This is on top of logged in, exit 0, `firstParty` and a Pro/Max/Team/Enterprise plan. There is no API-billed fallback.
+- **Probe models** are limited by argparse to `haiku`, `sonnet`, `claude-haiku-4-5` and `claude-sonnet-5`.
+
+### Hole 2: output, now finite public enums
+- The regex shape check `safe()` is gone. `enum()` echoes a value only if it is **exactly** a member of a fixed public set; anything else prints as `unlisted`. No hashing and no truncation, so a short private value is never recoverable.
+- **Fixed sets:**
+  - auth method: `claude.ai`, `oauth_token`, `api_key`, `api_key_helper`, `third_party`, `none`. These were extracted from the CLI 2.1.283 binary.
+  - provider: `firstParty`, `bedrock`, `vertex`, `foundry`
+  - plan: Claude Pro, Max, Team, Enterprise and API
+  - permission mode, effort level, rate-limit status, rate-limit type and window name
+  - notice subtype and trigger
+  - result subtype and `terminal_reason` (values seen in the binary)
+- **Model IDs and aliases:** known public IDs and aliases, with the `[1m]` suffix, pass through. Others become a family bucket such as `unlisted-claude-opus` or plain `unlisted`, and keep no part of the original string. Display names come from a fixed set.
+- **Numbers:** utilization is 0–10, rounded to 0.01. Reset times must fall within the 2020–2096 epoch range. HTTP status must be 100–599. Exit codes must be within ±255. Counts are capped. Unknown window names are counted in `unlisted_windows`, never used as keys.
+- **Output paths audited:** version (a digits-only semver match), auth, account, models, permission mode, commands count, every turn summary (deltas and approval counters, rate limit, notices, result), resume (`recalled` boolean), approvals (`file_written`), interrupt, unknown model, `turns_refused` (internal enum) and **errors**.
+  - `main()` now catches everything and prints only `{"error": "claude_not_found" | "cli_timeout" | "cli_spawn_failed" | "internal_error"}` with exit 3: no exception text, paths or CLI output.
+  - Child stderr is never read into output.
+  - The fields that `auth status` also returns (`email`, `orgId`, `orgName`, `projectsDirectory`, `configDirectory`) are never read.
+
+### Tests and evidence
+- **Command:** `python -m unittest discover -s tools/tests -p "test_*.py"` gives **93 tests, OK**, also under `-W error::ResourceWarning`.
+- **Planted marker.** `tools/tests/fake_claude_cli.py` plants `priv8x7q`, a short lowercase alphanumeric value that would have passed every old regex. It runs in two modes:
+  - `FAKE_MARKER=all`: every CLI-origin field is marked, gating ones included. The marker is absent from stdout and stderr, the gate fails closed (`not_a_claude_ai_login`) with **zero** user turns, and the version is still reported.
+  - `FAKE_MARKER=turns`: every non-gating field is marked, including rate-limit status, type, overage status and a window key; the notice's models and trigger; result subtype, `terminal_reason` and `modelUsage` keys; menu value, resolved model, display name and effort; and permission mode. The marker is absent, and the diagnostics survive: `ok=true`, known models, `unlisted-claude-opus`, utilization, the `unlisted_windows` count and the `model_refusal_fallback` subtype.
+- **Planted credentials.** A credential is planted in every stripped category, plus lowercase and unlisted names. The fake logs each child's environment variable names and which variables held planted values. The assertion: none reached any of the 8 or more probe children, or the adapter's preflight children. Adapter chat sessions never see a billing-route variable.
+- **Errors:** an exception that carries secret text plus the marker prints only `{"error": "internal_error"}`.
+- **Mutation check.** Each of these makes the suite fail:
+  - the old prefix denylist env: 3 failures
+  - regex-shape enums: 19
+  - model-ID passthrough: 4
+  - traceback in the error output: 1
+  - echoing window keys: 2
+  - turning off the `claude.ai` gate: 3
+- **Live run in this container** (CLI 2.1.283, "Claude API" login, planted `AWS_SECRET_ACCESS_KEY` and `GOOGLE_APPLICATION_CREDENTIALS`): exit 2, `turns_refused: not_a_claude_ai_login`, and 0 occurrences of anything planted in the report. The real model menu still printed public names: default/sonnet → `claude-sonnet-5`, `claude-fable-5-1`, opus → `claude-opus-5-5`, haiku → `claude-haiku-4-5-20251001`.
+
+### Remaining uncertainty and Windows-only checks
+- **Enum sets are tied to CLI 2.1.283.** A newer CLI's new plan label, auth method, model or `terminal_reason` will print as `unlisted`. That is safe, but less informative until the sets are updated. The version guard flags newer CLIs.
+- **Windows login location.** I have assumed a signed-in Windows CLI needs only allowlisted variables to find its login: `USERPROFILE` or `CLAUDE_CONFIG_DIR` for `.credentials.json`, plus `APPDATA` and `LOCALAPPDATA`. If a Windows install needs another variable, auth will fail closed (`not_logged_in` or `not_a_claude_ai_login`) rather than bill anything. The inventory-only probe (no `--turns`) is the safe first check of this, once you clear it.
+- **Not testable here:** `.exe` vs `.cmd` spawning under the allowlist, and whether case-insensitive matching behaves as intended on real Windows (e.g. `Path` vs `PATH`). The logic is unit-tested with mixed-case names. Settings-file `env` blocks and managed policy settings are outside the environment; the `claude.ai` and `firstParty` gate covers them.
+- **Housekeeping:** the stray branch `claude/desktop-runtime-adapter` still needs deleting by someone with delete rights.
+
 
 ## Previous prompt - 2 (VLI-158/159, Claude runtime)
 Seeded 2026-09-27 SAST. Read current main and PR #1 before starting. This is the Claude lane only.
