@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -120,6 +121,19 @@ class SessionTests(unittest.TestCase):
         with patch.dict(os.environ, {"FAKE_PLAN": "Claude API"}), self.assertRaises(RuntimeRefused) as caught:
             preflight(FAKE_CLI)
         self.assertEqual(str(caught.exception), "not_a_subscription_plan")
+
+    def test_preflight_times_out_instead_of_hanging(self) -> None:
+        script = self.root / "silent_cli.py"
+        script.write_text(
+            "import json, sys, time\n"
+            "if '--version' in sys.argv: print('2.1.283')\n"
+            "elif 'auth' in sys.argv: print(json.dumps({'loggedIn': True, 'apiProvider': 'firstParty'}))\n"
+            "else: time.sleep(30)\n", encoding="utf-8")
+        started = time.monotonic()
+        with patch("claude_runtime.PREFLIGHT_TIMEOUT_SECONDS", 1), self.assertRaises(RuntimeRefused) as caught:
+            preflight([sys.executable, str(script)])
+        self.assertLess(time.monotonic() - started, 15)
+        self.assertEqual(str(caught.exception), "not_first_party")
 
     def test_untrusted_workspace_and_silent_credit_models_are_refused(self) -> None:
         with tempfile.TemporaryDirectory() as other, self.assertRaises(RuntimeRefused) as caught:

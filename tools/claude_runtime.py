@@ -46,6 +46,7 @@ TESTED_VERSION = (2, 1, 283)
 # Models that can bill usage credits with no consent prompt in -p mode.
 CREDIT_BILLED = re.compile(r"fable|best", re.IGNORECASE)
 EVENT_TIMEOUT_SECONDS = 600
+PREFLIGHT_TIMEOUT_SECONDS = 60
 
 
 class RuntimeRefused(RuntimeError):
@@ -318,9 +319,13 @@ def preflight(executable: Sequence[str] | None = None) -> Preflight:
                              env=child_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
                              errors="replace")
+    # A CLI that never answers initialize must not hang the app.
+    watchdog = threading.Timer(PREFLIGHT_TIMEOUT_SECONDS, probe.kill)
+    watchdog.start()
     try:
         init = initialize(_LineSession(probe))
     finally:
+        watchdog.cancel()
         if probe.stdin:
             probe.stdin.close()
         try:
