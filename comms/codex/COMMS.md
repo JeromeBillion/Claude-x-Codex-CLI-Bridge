@@ -8,7 +8,20 @@ This file is the Codex work lane for this repo only. Claude Code uses `comms/cla
 - Keep reviewing claims independently; a failed safety or billing test still blocks its code, even without a separate human merge gate. Codex and Claude are equal collaborators, not rubber stamps. Challenge a DONE claim against the repo before confirming it. Suggest useful features where tickets leave details open, but do not silently change locked scope: Windows desktop coding workspace, Claude Code and Codex runtime, first-class provider/model switching, local context handoff, CLI mode retained.
 - Subscription access, supported model names, native chat history and connector parity are questions to prove, not facts to claim. Do not evade provider restrictions or collect user credentials.
 
-## Current prompt - 2 (VLI-158/159, Codex runtime)
+## Current prompt - 3 (VLI-158/159, shared events + Windows probe)
+Seeded 2026-09-27 SAST. Read current main. This is the Codex lane only.
+
+Your prompt-2 runtime foundation is merged (87 tests). Claude's lane has since merged `tools/claude_runtime.py` and the shared provider-neutral event format in `docs/claude-desktop-runtime.md` (`Envelope(provider, session_ref, kind, data)`), and explicitly asked your lane to map its App Server events onto that same format. Three work items:
+
+1. **Shared event mapping.** Map the Codex App Server events from your `tools/codex_app_server.py` adapter onto the envelope kinds in `docs/claude-desktop-runtime.md`: text deltas, thinking/activity, tool started/finished, blocking approval requests and decisions, turn completion/failure, account and rate-limit changes, connection/auth errors. Keep `session_ref` as the native Codex thread ID, never translated. Extend the doc's kind table where Codex-side events genuinely need a kind Claude's lane does not have (for example MCP elicitation or connector/tool approval families), and note the extension for Claude's lane. Add conformance tests proving both adapters emit the same kinds for equivalent events.
+
+2. **Windows probe harness.** Deliver the safe version-matched Windows probe harness for Jerome's signed-in Codex CLI that prompt 2 called for, building on your merged `tools/codex_probe.py`. Same safety bar as Claude's lane probe: no reading of auth files or credentials, no API keys, no printing of account identifiers or thread IDs, allowlisted output only (plan category, CLI version, model IDs/efforts, rate-limit presence, pass/fail per check), and no model turns by default - a real turn happens only behind an explicit `--turn` flag in a disposable read-only workspace. It must verify the installed CLI version against a tested-version constant, confirm `account/read.type = chatgpt`, paginate `model/list`, and complete initialize/initialized over stdio JSONL. Give Jerome exact PowerShell steps.
+
+3. **Approval-mode toggle (Jerome's 16:04 product decision, VLI-159).** Jerome decided approval mode is a user TOGGLE: ask-for-every-edit AND auto-accept in trusted folders must both be available, user-selectable. Incorporate this as design input for the next desktop slice: the adapter/host must expose both modes, scope auto-accept to folders the user explicitly trusted, and keep the blocking approval path as default. Record how this maps to App Server approval policies.
+
+Branch, open a focused PR, run your tests, and merge safe green code autonomously to main on this repo only; do not deploy. Reply directly under prompt 3 in this file with the PR URL, head SHA, tested evidence, and any blockers; do not overwrite the prompt or Claude's lane.
+
+## Previous prompt - 2 (VLI-158/159, Codex runtime)
 Seeded 2026-09-27 SAST. Read current main. This is the Codex lane only.
 
 Jerome's scope decision at 14:55 SAST, verbatim: "thats the whole product today. - build it as your personal tool first, so thats correct". Build for Jerome's own Windows desktop use with his own installed, signed-in Codex and Claude Code subscriptions. Retain CLI mode. Do not design subscription-login distribution to other users, API-key fallback, or credential interception. Jerome's signed-in Windows Codex CLI verification gate remains open; his probe results will be supplied later. Do not claim model entitlement, connector parity or end-to-end Windows behavior proven.
