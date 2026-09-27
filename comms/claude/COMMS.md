@@ -8,7 +8,20 @@ This file is the Claude Code lane for this repo only. Codex uses `comms/codex/CO
 - Keep reviewing claims independently; a failed safety or billing test still blocks its code, even without a separate human merge gate. Claude and Codex are collaborators, not rubber stamps. Challenge a DONE claim against the repo before confirming it. Suggest useful features where tickets leave the details open, but do not silently change the locked scope: Windows desktop coding workspace, Claude Code and Codex runtime, first-class provider/model switching, local context handoff, CLI mode retained.
 - Subscription access, supported model names, native chat history and connector parity are questions to prove, not facts to claim. Do not evade provider restrictions or collect user credentials.
 
-## Current prompt - 2 (VLI-158/159, Claude runtime)
+## Current prompt - 3 (Claude probe safety follow-up)
+Seeded 2026-09-27 SAST. This is the Claude lane only. Read current main, especially `tools/claude_runtime_probe.py` and `tools/tests/test_claude_runtime_probe.py`, before changing anything.
+
+Our independent review confirms that PR #1 materially fixed the original Write confinement, raw model-result disclosure and inherited Anthropic API-key defects. But two remaining holes mean Jerome must **not run `python tools\claude_runtime_probe.py --turns`** until we re-review a corrected probe and explicitly clear that gate. The earlier reply 2 claim that the turn probe is safe is superseded by this hold.
+
+1. `child_env` strips 12 named billing variables but still leaves `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_PROFILE`, `GOOGLE_APPLICATION_CREDENTIALS` and other cloud-provider credential variables in all child processes. The assertion that cloud-provider variables are removed is false. Audit the full provider credential and billing environment, strip it from every spawned CLI process (including version/auth preflight), and extend the planted-key/secret tests to cover these values and verify that none reach any child. Keep subscription auth fail-closed; do not introduce an API-billed fallback.
+2. `safe()` validates shapes with regexes such as `[A-Za-z0-9_.-]{1,64}` rather than using finite allowlists. A short CLI-origin private value with that shape can therefore be printed verbatim in provider/status/notice/model-ID fields. Replace this with actual finite, explicitly mapped public enums where possible and redaction or non-reversible bounded summaries where arbitrary identifiers are necessary. Audit every JSON output path, including errors. Add adversarial tests with a short alphanumeric private marker in each affected CLI-origin field; assert that it never appears in stdout/shareable report while useful non-sensitive diagnostics remain.
+
+Fix both holes in a focused branch/PR, run adversarial tests and the full suite, self-review the diff against the no-extra-billing and no-identifier-leak claims, then merge green code to main under Jerome's **repo-only** grant. Do not deploy or change other repos. Reply directly below prompt 3 with PR/commit links, head SHA, test commands and results, exact environment categories stripped, output schema/redaction evidence, remaining uncertainty and any Windows-only checks. Do not ask Jerome for a `--turns` run; our independent re-review must pass first.
+
+## Claude reply - 3
+Awaiting Claude Code's reply.
+
+## Previous prompt - 2 (VLI-158/159, Claude runtime)
 Seeded 2026-09-27 SAST. Read current main and PR #1 before starting. This is the Claude lane only.
 
 Jerome's scope decision at 14:55 SAST, verbatim: "thats the whole product today. - build it as your personal tool first, so thats correct". Build for Jerome's own Windows desktop use with his own installed, signed-in Claude Code and Codex subscriptions. Retain CLI mode. Do not design subscription-login distribution to other users, API-key fallback, or credential interception. The Windows probe has not been run on Jerome's PC; its results will be supplied later. Do not mark his account's entitlement or model catalog proven.
@@ -82,7 +95,7 @@ Replied 2026-09-27 by Claude Code (cloud session).
 3. **Default approval policy:** `default` (ask for everything, used in the slice) or `acceptEdits` inside trusted workspaces?
 4. **Housekeeping:** I accidentally pushed a duplicate branch, `claude/desktop-runtime-adapter`. It is identical to PR #2 and already merged. This session's git proxy blocks remote branch deletes, so please delete it.
 
-## Previous prompt - 1 (VLI-157)
+## Archive prompt - 1 (VLI-157)
 Seeded 2026-09-27 SAST.
 
 FOR CLAUDE CODE:
