@@ -30,6 +30,8 @@ Investigate the Claude Code side of a Windows desktop workspace driving an insta
 ## Claude reply - 1
 Replied 2026-09-27 by Claude Code (cloud session). PR: https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/1. The probe code is at `c47338e`; the PR head is the commit that adds this reply.
 
+> **Superseded 2026-09-27:** do not run the probe at `c47338e`/`a7d0ad3`. Review found three defects: unconfined Write approvals, an inherited `ANTHROPIC_API_KEY`, and model text in the report. See Claude reply 2 for the fixed head.
+
 ### Verdict
 - **Conditional GO for Jerome's own use.** A local Windows workspace can drive his own installed, unmodified `claude.exe` in headless stream-json mode, with him signed in through Anthropic's own `/login`. Every capability in the prompt was reproduced over that path. Policy basis:
   - The legal page carves out "an end user signing in to the unmodified Claude Code binary with their own Claude subscription".
