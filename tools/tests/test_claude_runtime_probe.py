@@ -386,7 +386,8 @@ class EndToEndFakeCliTests(unittest.TestCase):
     def test_errors_are_reported_as_fixed_codes_only(self) -> None:
         report, output, _ = self.run_probe(turns=False, claude_command="missing")
         self.assertEqual(report, {"error": "claude_not_found", "_exit": 3})
-        with patch.object(probe_module, "probe", side_effect=RuntimeError(f"boom {SECRET_TEXT} {MARKER}")), \
+        with patch.object(probe_module, "resolve_claude", return_value=FAKE_CLI), \
+                patch.object(probe_module, "probe", side_effect=RuntimeError(f"boom {SECRET_TEXT} {MARKER}")), \
                 redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
             self.assertEqual(probe_module.main([]), 3)
         self.assertEqual(json.loads(out.getvalue()), {"error": "internal_error"})

@@ -9,7 +9,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.codex_app_server import AppServerError, AppServerTransport, CodexRuntime, ThreadStore
+from tools.codex_app_server import (AppServerError, AppServerTransport, CodexRuntime,
+                                    ThreadStore, TrustedFolderStore, normalize_app_event)
+from tools.runtime_events import Envelope
+from claude_runtime import normalize as normalize_claude
 
 
 class FakeTransport:
@@ -58,6 +61,7 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(runtime.open_thread(workspace), "thr_native")
             self.assertEqual(fake.calls[-1][1]["sandbox"], "readOnly")
             runtime.start_turn("Read this repository", "second", "high")
+            self.assertEqual(fake.calls[-1][1]["sandboxPolicy"], {"type": "readOnly"})
             with self.assertRaises(ValueError):
                 runtime.start_turn("test", "unlisted")
             runtime.interrupt()
@@ -65,7 +69,10 @@ class RuntimeTests(unittest.TestCase):
             restarted = CodexRuntime(FakeTransport(), store)
             restarted.discover()
             restarted.open_thread(workspace)
-            self.assertEqual(restarted.transport.calls[-1], ("thread/resume", {"threadId": "thr_native"}))
+            method, params = restarted.transport.calls[-1]
+            self.assertEqual(method, "thread/resume")
+            self.assertEqual(params["threadId"], "thr_native")
+            self.assertEqual(params["sandbox"], "readOnly")
 
     def test_approvals_require_explicit_decision_and_other_requests_stay_blocked(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -73,12 +80,14 @@ class RuntimeTests(unittest.TestCase):
             runtime = CodexRuntime(fake, ThreadStore(Path(tmp) / "state.json"))
             fake.events.put({"id": 8, "method": "item/commandExecution/requestApproval", "params": {"command": "git status"}})
             event = runtime.next_event()
-            self.assertEqual(event["kind"], "approval_required")
+            self.assertEqual(event.kind, "approval_request")
+            self.assertEqual(event.session_ref, None)
             self.assertEqual(fake.answers, [])
             with self.assertRaises(ValueError):
                 runtime.decide_approval(8, "acceptForSession")
             runtime.decide_approval(8, "decline")
             self.assertEqual(fake.answers, [(8, {"decision": "decline"})])
+            self.assertEqual(runtime.next_event().kind, "approval_decision")
             fake.events.put({"id": 9, "method": "item/permissions/requestApproval", "params": {"reason": "network"}})
             runtime.next_event()
             with self.assertRaises(ValueError):
@@ -90,8 +99,83 @@ class RuntimeTests(unittest.TestCase):
             runtime = CodexRuntime(fake, ThreadStore(Path(tmp) / "state.json"))
             fake.events.put({"method": "item/agentMessage/delta", "params": {"threadId": "thr_native", "turnId": "t", "delta": "Hello"}})
             fake.events.put({"method": "turn/completed", "params": {"turn": {"id": "t", "status": "failed", "error": {"codexErrorInfo": {"type": "UsageLimitExceeded"}}}}})
-            self.assertEqual(runtime.next_event()["text"], "Hello")
-            self.assertEqual(runtime.next_event()["failureKind"], "limit")
+            self.assertEqual(runtime.next_event().data["text"], "Hello")
+            self.assertEqual(runtime.next_event().data["terminal_reason"], "limit")
+
+    def test_rate_account_disconnect_and_approval_decision_envelopes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = FakeTransport()
+            runtime = CodexRuntime(fake, ThreadStore(Path(tmp) / "state.json"))
+            runtime.thread_id = "native-thread"
+            fake.events.put({"method": "account/rateLimits/updated", "params": {"rateLimits": {
+                "limitId": "codex", "primary": {"usedPercent": 91, "resetsAt": 123}}}})
+            fake.events.put({"method": "account/updated", "params": {"authMode": None, "email": "secret@example.com"}})
+            fake.events.put({"method": "host/disconnected", "params": {"exitCode": 1}})
+            self.assertEqual(runtime.next_event().kind, "rate_limit")
+            self.assertEqual(runtime.next_event().data, {"auth_mode": None, "plan_category": None})
+            self.assertEqual(runtime.next_event().data, {"category": "auth"})
+            exit_event = runtime.next_event()
+            self.assertEqual(exit_event.kind, "process_exited")
+            self.assertEqual(exit_event.session_ref, "native-thread")
+
+    def test_special_approval_families_are_blocking(self):
+        for method, kind in [("mcpServer/elicitation/request", "mcp_elicitation"),
+                             ("tool/requestUserInput", "connector_approval_request"),
+                             ("item/permissions/requestApproval", "approval_request")]:
+            with self.subTest(method=method):
+                event = normalize_app_event({"id": 7, "method": method,
+                                             "params": {"threadId": "native"}}, None)[0]
+                self.assertEqual(event.kind, kind)
+                self.assertEqual(event.session_ref, "native")
+
+    def test_approval_toggle_scopes_auto_edits_to_explicit_trust(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "project"
+            workspace.mkdir()
+            trust = TrustedFolderStore(Path(tmp) / "trusted.json")
+            runtime = CodexRuntime(FakeTransport(), ThreadStore(Path(tmp) / "state.json"))
+            runtime.discover()
+            with self.assertRaises(AppServerError):
+                runtime.open_thread(workspace, approval_mode="auto_accept_trusted", trusted_folders=trust)
+            runtime.open_thread(workspace)
+            self.assertEqual(runtime.transport.calls[-1][1]["sandbox"], "readOnly")
+            trust.trust(workspace)  # represents the user's explicit click
+            runtime.set_approval_mode("auto_accept_trusted", workspace, trust)
+            runtime.start_turn("Work here", "first")
+            policy = runtime.transport.calls[-1][1]["sandboxPolicy"]
+            self.assertEqual(policy["type"], "workspaceWrite")
+            self.assertEqual(policy["writableRoots"], [str(workspace.resolve())])
+            self.assertFalse(policy["networkAccess"])
+            with self.assertRaises(AppServerError):
+                runtime.set_approval_mode("ask_every_edit", workspace, trust)
+
+    def test_shared_envelope_kind_conformance(self):
+        equivalents = [
+            ({"method": "item/agentMessage/delta", "params": {"delta": "hi"}},
+             {"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hi"}}}),
+            ({"method": "item/reasoning/summaryTextDelta", "params": {"delta": "private"}},
+             {"type": "stream_event", "event": {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "private"}}}),
+            ({"method": "item/started", "params": {"item": {"type": "commandExecution", "id": "one"}}},
+             {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "id": "one"}]}}),
+            ({"method": "item/completed", "params": {"item": {"type": "commandExecution", "id": "one", "status": "completed"}}},
+             {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "one"}]}}),
+            ({"id": 4, "method": "item/commandExecution/requestApproval", "params": {"threadId": "codex-native"}},
+             {"type": "control_request", "request_id": "four", "request": {"subtype": "can_use_tool", "tool_name": "Bash"}}),
+            ({"method": "turn/completed", "params": {"turn": {"status": "completed"}}},
+             {"type": "result", "is_error": False, "subtype": "success"}),
+        ]
+        for codex, claude in equivalents:
+            with self.subTest(codex=codex["method"]):
+                ce = normalize_app_event(codex, "codex-native")[0]
+                cl = normalize_claude(claude, "claude-native")[0]
+                self.assertIsInstance(ce, Envelope)
+                self.assertIsInstance(cl, Envelope)
+                self.assertEqual(ce.kind, cl.kind)
+                self.assertEqual(ce.session_ref, "codex-native")
+                self.assertEqual(cl.session_ref, "claude-native")
+        self.assertEqual(normalize_app_event({"method": "turn/completed", "params": {"turn": {"status": "failed"}}}, "c")[0].data["ok"], False)
+        self.assertEqual(normalize_app_event({"method": "account/updated", "params": {"authMode": "chatgpt", "email": "private@example.com"}}, "c")[0].data,
+                         {"auth_mode": "chatgpt", "plan_category": None})
 
     def test_api_key_account_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

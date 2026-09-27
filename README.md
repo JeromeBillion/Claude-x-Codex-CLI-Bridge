@@ -225,7 +225,9 @@ The separate [runtime design](docs/codex-app-server-runtime.md) and
 `tools/codex_app_server.py` provide a foundation for a future personal Windows
 desktop view. They do not replace this CLI bridge or establish which models
 Jerome's signed-in account can use. On his Windows machine, run the sanitized
-read-only discovery probe from PowerShell with `python -m tools.codex_probe`;
-add `--turn` to test two small subscription-backed turns and native resume in
-a disposable directory. The probe prints model IDs and plan category, never
-account identifiers, credentials, thread IDs, or model output.
+read-only discovery probe from PowerShell with `py -3 -m tools.codex_probe`;
+add `--turn` only after reviewing the report to test two small subscription-backed turns and native resume in
+a disposable directory. The probe prints known public model IDs (other catalog
+entries as `unlisted`) and plan category, never
+account identifiers, credentials, thread IDs, or model output. A CLI version
+different from the reviewed probe target blocks the optional model turns.
