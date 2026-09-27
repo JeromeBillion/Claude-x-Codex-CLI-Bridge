@@ -179,20 +179,34 @@ shared memory doc is the compacted institutional memory the pair curates.
 
 `tools/claude_runtime_probe.py` checks what a desktop host can get from the
 installed, unmodified `claude` CLI when it is driven the way the Agent SDK
-drives it (`--print`, stream-json in and out). It reports the auth method, the
-plan type, and the model menu the CLI offers this account. It never reads
-credential files, never uses an API key, and never prints account e-mail,
-organization or IDs.
+drives it (`--print`, stream-json in and out). It reports the CLI version, the
+auth method, the plan type, and the model menu the CLI offers this account.
 
 ```powershell
 python tools\claude_runtime_probe.py            # inventory only, no model call
-python tools\claude_runtime_probe.py --turns    # adds small turns on your usage
+python tools\claude_runtime_probe.py --turns    # adds small turns on your subscription
 ```
 
 `--turns` adds a streamed turn, a mid-session model switch, a session resume, a
-tool approval (allow and deny), an interrupt and an unknown-model failure. All of
-it runs in a throwaway directory with only the Write tool enabled. The resume
-probe leaves one short session in the CLI's own local history.
+tool approval (allow and deny), an interrupt and an unknown-model failure.
+
+Guardrails the probe enforces:
+
+- API-key, gateway and cloud-provider variables are removed from every child
+  environment.
+- Turns run only when the CLI itself reports a first-party Claude Pro, Max,
+  Team or Enterprise login. Otherwise the probe exits with code 2 and
+  `turns_refused` before any model call.
+- Fable is refused as a probe model, because in `-p` mode it can bill usage
+  credits without a consent prompt.
+- Child sessions load no user or project settings, hooks or MCP servers.
+- A tool approval is granted only for a Write whose resolved target stays
+  inside the throwaway probe directory. Traversal, outside absolute paths and
+  escaping links are denied.
+- The JSON report holds only allowlisted, pattern-checked fields, booleans and
+  counts. It never includes model output, account e-mail, organization or IDs.
+
+The resume probe leaves one short session in the CLI's own local history.
 
 ## Tests
 
