@@ -21,6 +21,67 @@ Also review the rest of its output paths for the same privacy and billing issues
 
 In parallel, design Claude's desktop runtime adapter for VLI-158/159 from your prompt-1 findings. Define the process lifecycle and stream-json event mapping for text deltas, tool activity, approval requests, per-turn terminal state, `is_error` versus exit code, rate-limit events and `model_refusal_fallback` visibility. Specify `initialize.models` discovery, `set_model`, interrupt, session resume, upgrade/version guard and explicit context handoff to Codex without claiming portable native sessions or consumer-chat history. Account for Windows executable discovery, local workspace trust, installed CLI authentication, no API-key billing and no hidden subscription-credit costs. Identify a small first vertical slice, interface and acceptance tests, open questions and any provider terms that constrain this personal-use design. Feed the design into VLI-158/159, without silently changing their scope. If implementation is warranted, keep it in a focused separate PR and test and merge safe code autonomously in this repo only; do not deploy. Reply directly under prompt 2 in this file with evidence and links; do not overwrite the prompt or Codex's lane.
 
+## Claude reply - 2
+Replied 2026-09-27 by Claude Code (cloud session).
+
+### 1. PR #1 probe repair: fixed and merged
+- **PR:** https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/1
+- **Heads:** fixed head `d1af32d`, repair commit `b22e4bd`. Merged to main as `61f36a5`.
+- **Defect 1, Write confinement.** A Write is approved only if its resolved target is inside the probe directory, and the approved input is pinned to that validated absolute path. Denied:
+  - `..` in any spelling, including `sub/../x` and backslashes
+  - absolute paths outside the directory
+  - symlinks or junctions that escape
+  - the directory itself, directory targets, NUL bytes and non-string input
+  - every tool other than Write
+- **Defect 2, API keys.** Every child process has these removed, case-insensitively: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, the Bedrock, Vertex and Foundry variables, and `AWS_BEARER_TOKEN_BEDROCK`. The version and auth checks are included.
+  - Model turns run only if all of these hold: `auth status` exits 0 and reports logged in, the provider is `firstParty`, the `initialize` plan is Claude Pro, Max, Team or Enterprise, and no `apiKeySource` is reported.
+  - Otherwise the probe exits 2 with `turns_refused: <reason>` before any model call.
+- **Defect 3, report text.** `result_text` is removed. Resume is checked internally and reported only as a `recalled` boolean. Every reported field is allowlisted and pattern-checked. Model output, refusal explanations, model descriptions and account e-mail, organization or IDs cannot reach stdout.
+- **Broader billing and output review (also fixed):**
+  - Fable is refused as a probe model, because in `-p` mode it can bill usage credits without asking.
+  - Probe sessions load no user or project settings, hooks or MCP servers (`--setting-sources ""`, `--strict-mcp-config`), and claude.ai connectors are disabled.
+  - `--max-turns 2` and `--effort low` are set.
+  - The version is reduced to a semver match.
+  - Child stderr is never printed.
+- **Evidence:**
+  - 67 tests OK at that head. The new adversarial tests include end-to-end runs against `tools/tests/fake_claude_cli.py`, which never contacts a model and plants secrets and an API key. The runs show the key reached no child, no secret appeared in stdout, a "Claude API" plan was refused with zero user turns, and an escaping Write proposed by the CLI was denied and never written.
+  - Mutation check: putting each defect back makes the suite fail (guard off: 5 failures; env strip off: 2; `result_text` back: 3; gate off: 1 error).
+  - Live run in this container, which uses a "Claude API" login: `--turns` exits 2 with `turns_refused: not_a_subscription_plan` and makes no model call.
+- **The probe is safe for Jerome to run now:** `python tools\claude_runtime_probe.py`, then add `--turns`. On a non-subscription login it will refuse turns by design. His entitlement and model menu remain **unproven** until he runs it.
+
+### 2. Desktop runtime adapter design and first slice: merged
+- **PR:** https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/2
+- **Heads:** head `69b6812`, merged to main as `a07bc00`.
+- **Design:** `docs/claude-desktop-runtime.md`.
+- **Slice:** `tools/claude_runtime.py`.
+- **Tests:** 82 OK. The 15 adapter acceptance tests run against the fake CLI.
+- **Lifecycle.** Discover the CLI (PATH, then `%USERPROFILE%\.local\bin\claude.exe`, then `%APPDATA%\npm\claude.cmd`). Run preflight with no model call:
+  - version guard: min 2.1.280, tested 2.1.283, with "newer untested" flagged
+  - `auth status` exit code
+  - the `initialize` plan and API-key-source gate
+  - the model menu
+  - a 60s watchdog
+  Then the app's own workspace trust gate, because `-p` skips the CLI's trust dialog and runs repo hooks and `.mcp.json`. Then one long-lived process per chat: `--print` with stream-json in and out, `--include-partial-messages`, `--permission-prompt-tool stdio`, `--permission-mode default`, `--model`, and `--session-id` or `--resume`, with the environment stripped. It never uses `--bare`.
+- **Provider-neutral envelope** `(provider, session_ref, kind, data)` with kinds `text_delta`, `thinking_delta`, `tool_started`, `tool_finished`, `approval_request`, `rate_limit`, `notice` (for `model_refusal_fallback` and `api_retry`), `session_started`, `turn_finished` and `process_exited`.
+  - The turn verdict comes from `is_error`, never from the exit code or `subtype`.
+  - Unknown event types are dropped.
+  - An approval allows exactly the input the user saw, and IDs the CLI never issued are refused.
+- **Models.** The menu comes only from `initialize.models`. `set_model` switches between turns. Fable is refused at spawn and on `set_model` unless the UI passes an explicit per-session confirmation, so there are no hidden credit costs.
+- **Interrupt** ends the turn with `ok=false` and `aborted_streaming`.
+- **Resume and history.** Resume uses the native `--resume` or `--fork-session`. The app keeps its own envelope log for history. There is no consumer-chat import.
+- **Handoff to Codex.** `build_handoff()` makes a bounded, user-visible and editable packet: the user summary, selected files, tools used, the last verdict and the reply tail. It states that the Claude session is "not resumable in Codex", and no native session transfer is claimed.
+- **Terms that constrain the design** (legal-and-compliance page, Agent SDK note): one end user on the unmodified binary with his own subscription, and ordinary individual usage. No credential collection, reading, storing or `setup-token`. Login only through `claude auth login` in his own terminal.
+
+### Feeding VLI-158/159
+- The design doc is written as input to VLI-158/159 without changing their scope. The UI shell technology is left open.
+- **Codex lane:** please map your app-server items and approvals onto the envelope kinds above, or propose changes, so we share one schema. Native thread and session IDs stay per provider.
+
+### Open questions / blockers
+1. **Jerome:** run the fixed probe on Windows and paste its JSON. It is safe to share by construction. This proves the plan, the model menu, `.exe`/`.cmd` spawning and UTF-8.
+2. **Jerome:** Fable in the desktop app, yes or no? If yes, should confirmation be per session or per turn?
+3. **Default approval policy:** `default` (ask for everything, used in the slice) or `acceptEdits` inside trusted workspaces?
+4. **Housekeeping:** I accidentally pushed a duplicate branch, `claude/desktop-runtime-adapter`. It is identical to PR #2 and already merged. This session's git proxy blocks remote branch deletes, so please delete it.
+
 ## Previous prompt - 1 (VLI-157)
 Seeded 2026-09-27 SAST.
 
