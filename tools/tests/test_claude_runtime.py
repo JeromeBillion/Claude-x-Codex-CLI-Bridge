@@ -126,11 +126,13 @@ class TrustTests(unittest.TestCase):
 class SessionTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
         self.log = self.root / "calls.jsonl"
         self.env = patch.dict(os.environ, {"FAKE_CLAUDE_LOG": str(self.log), "FAKE_PLAN": "Claude Max",
                                            **SESSION_PLANTED, **PREFLIGHT_ONLY_PLANTED})
         self.env.start()
+        self.addCleanup(self.env.stop)
         # Test plumbing for the fake CLI is the only addition to the preflight allowlist.
         self.allow = patch.object(probe_module, "ENV_ALLOWLIST",
                                   probe_module.ENV_ALLOWLIST | {"FAKE_CLAUDE_LOG", "FAKE_PLAN"})
@@ -139,10 +141,6 @@ class SessionTests(unittest.TestCase):
         self.trust = TrustStore(self.root / "trust.json")
         self.trust.trust(self.root)
         self.pre = preflight(FAKE_CLI)
-
-    def tearDown(self) -> None:
-        self.env.stop()
-        self._tmp.cleanup()
 
     def open(self, **kwargs) -> ClaudeSession:
         session = ClaudeSession(self.pre, self.root, model=kwargs.pop("model", "sonnet"),

@@ -222,8 +222,27 @@ python -m unittest discover -s tools/tests -p "test_*.py" -v
 ## Codex App Server desktop slice
 
 The separate [runtime design](docs/codex-app-server-runtime.md) and
-`tools/codex_app_server.py` provide a foundation for a future personal Windows
-desktop view. They do not replace this CLI bridge or establish which models
+`tools/codex_app_server.py` feed a first personal desktop timeline:
+
+```powershell
+py -3 -m tools.desktop
+```
+
+Choose a project, select GPT only, collaboration, or Claude only, then connect
+the installed CLIs to discover their model catalogs without sending a model
+turn. Select a model for each turn. The timeline shows streaming text, tool
+activity, limits, failures, native provider session IDs and blocking approvals.
+Codex resumes its own thread ID after a restart; Claude keeps its own session
+ID. Collaboration shows an editable cross-provider handoff and labels a result
+jointly approved only after both providers explicitly approve the same text.
+Otherwise, the user decides how to proceed.
+
+The default **ask every edit** mode is currently read-only proposal mode for
+Codex; its per-edit staged apply gate is still needed. Auto-accept is available
+for Codex only after explicitly trusting the exact folder. Claude auto-accept
+is blocked in this host until its adapter exposes that policy. This is a first
+slice, not Windows account acceptance or a packaged alpha. The CLI bridge
+remains available. The desktop does not establish which models
 Jerome's signed-in account can use. On his Windows machine, run the sanitized
 read-only discovery probe from PowerShell with `py -3 -m tools.codex_probe`;
 add `--turn` only after reviewing the report to test two small subscription-backed turns and native resume in
