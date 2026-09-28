@@ -22,21 +22,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
-from claude_runtime_probe import (
-    ProbeRefused,
-    SUBSCRIPTION_PLANS,
-    VERSION,
-    child_env,
-    initialize,
-    summarize_account,
-    summarize_auth,
-    summarize_models,
-    summarize_notice,
-    summarize_rate_limit,
-    summarize_result,
-    require_subscription,
-)
-from tools.runtime_events import Envelope
+# Works both as a flat script module (tools/ on sys.path, as the tests and
+# `python tools\claude_runtime.py` use it) and as the package `tools.claude_runtime`.
+try:
+    from claude_runtime_probe import (
+        ProbeRefused, SUBSCRIPTION_PLANS, VERSION, child_env, initialize, require_subscription,
+        summarize_account, summarize_auth, summarize_models, summarize_notice,
+        summarize_rate_limit, summarize_result,
+    )
+except ImportError:  # imported as tools.claude_runtime from the repo root
+    from tools.claude_runtime_probe import (
+        ProbeRefused, SUBSCRIPTION_PLANS, VERSION, child_env, initialize, require_subscription,
+        summarize_account, summarize_auth, summarize_models, summarize_notice,
+        summarize_rate_limit, summarize_result,
+    )
+# One Envelope class shared with the Codex adapter whenever the package is importable.
+try:
+    from tools.runtime_events import Envelope
+except ImportError:
+    from runtime_events import Envelope
 
 
 PROVIDER = "claude"
