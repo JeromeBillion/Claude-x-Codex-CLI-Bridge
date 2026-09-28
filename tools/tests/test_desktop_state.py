@@ -29,12 +29,12 @@ class DesktopStateTests(unittest.TestCase):
 
     def test_joint_result_requires_two_exact_votes_and_resets_for_new_candidate(self):
         state = Collaboration()
-        state.propose("candidate")
+        state.propose("candidate", "codex")
         state.vote("claude", approves=True, reviewed_text="candidate")
         self.assertIsNone(state.joint_answer)
         state.vote("codex", approves=True, reviewed_text="candidate")
         self.assertEqual(state.joint_answer, "candidate")
-        state.propose("revised")
+        state.propose("revised", "claude")
         self.assertIsNone(state.joint_answer)
         state.vote("claude", approves=True, reviewed_text="different")
         self.assertEqual(state.state, "needs_user_decision")

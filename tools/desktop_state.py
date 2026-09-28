@@ -48,13 +48,17 @@ class Collaboration:
     """A result is joint only after two explicit votes on identical content."""
 
     candidate: str = ""
+    source_provider: str = ""
     votes: dict[str, tuple[bool, str]] = field(default_factory=dict)
     state: str = "draft"  # draft | awaiting_review | approved | needs_user_decision
 
-    def propose(self, candidate: str) -> None:
+    def propose(self, candidate: str, source_provider: str) -> None:
         if not candidate.strip():
             raise ValueError("Empty collaboration candidate")
+        if source_provider not in {"codex", "claude"}:
+            raise ValueError("Unknown collaboration lead")
         self.candidate = candidate
+        self.source_provider = source_provider
         self.votes.clear()
         self.state = "awaiting_review"
 

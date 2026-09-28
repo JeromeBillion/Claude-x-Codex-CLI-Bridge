@@ -233,7 +233,8 @@ the installed CLIs to discover their model catalogs without sending a model
 turn. Select a model for each turn. The timeline shows streaming text, tool
 activity, limits, failures, native provider session IDs and blocking approvals.
 Codex resumes its own thread ID after a restart; Claude keeps its own session
-ID. Collaboration shows an editable cross-provider handoff and labels a result
+ID. In collaboration, choose which provider leads. The host shows an editable
+cross-provider handoff and labels a result
 jointly approved only after both providers explicitly approve the same text.
 Otherwise, the user decides how to proceed.
 

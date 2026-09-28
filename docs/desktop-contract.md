@@ -31,8 +31,9 @@ a file or command approval issued by App Server blocks the turn and requires
 an explicit user answer. MCP elicitation, connector input and unknown approval families are
 shown as unsupported and interrupt the turn. No silent approval is sent.
 
-Collaboration is deliberately sequential: Codex drafts, the user can edit or
-omit the handoff packet, Claude reviews, and Codex confirms. The candidate is
+Collaboration is deliberately sequential: the user selects a lead based on the
+task, that provider drafts, the user can edit or omit the handoff packet, the
+partner reviews, and the lead confirms. The candidate is
 jointly presented only if Claude and Codex each return an exact approval of
 the same SHA-256 candidate. Any disagreement, malformed vote, failure or
 unavailable provider leaves the candidate unapproved and opens a user decision.

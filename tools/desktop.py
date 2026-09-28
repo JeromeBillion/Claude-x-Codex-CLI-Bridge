@@ -54,6 +54,7 @@ class DesktopHost:
         self.codex_model = tk.StringVar()
         self.codex_effort = tk.StringVar()
         self.claude_choice = tk.StringVar()
+        self.collaboration_lead = tk.StringVar(value="codex")
         self.status = tk.StringVar(value="Select a local project. No model turn starts on Connect.")
         self._build()
         self.root.after(50, self._drain)
@@ -87,10 +88,13 @@ class DesktopHost:
         ttk.Label(options, text="Edit approval").grid(row=1, column=3, sticky="w")
         ttk.Combobox(options, textvariable=self.approval, state="readonly", width=27,
                      values=("ask_every_edit", "auto_accept_trusted")).grid(row=2, column=3, sticky="w")
+        ttk.Label(options, text="Collaboration lead").grid(row=1, column=4, sticky="w")
+        ttk.Combobox(options, textvariable=self.collaboration_lead, state="readonly", width=12,
+                     values=("codex", "claude")).grid(row=2, column=4, sticky="w")
         ttk.Label(options, text="Ask every edit = read-only proposal until per-edit apply is available.").grid(
-            row=3, column=0, columnspan=4, sticky="w", pady=4)
+            row=3, column=0, columnspan=5, sticky="w", pady=4)
         ttk.Label(options, text="Auto-accept requires explicit trust of the exact folder; network remains disabled for Codex.").grid(
-            row=4, column=0, columnspan=4, sticky="w")
+            row=4, column=0, columnspan=5, sticky="w")
 
         self.timeline = tk.Text(self.root, wrap="word", state="disabled", height=25)
         self.timeline.pack(fill="both", expand=True, padx=10)
@@ -221,11 +225,11 @@ class DesktopHost:
             self.fable_confirmed = True
         self.prompt.delete("1.0", "end")
         self._line(f"\nUSER ({mode}): {prompt}\n")
-        model, effort = self.codex_model.get(), self.codex_effort.get()
-        self._work(lambda: self._run_turn(mode, approval, prompt, model, effort, selected_claude))
+        model, effort, lead = self.codex_model.get(), self.codex_effort.get(), self.collaboration_lead.get()
+        self._work(lambda: self._run_turn(mode, approval, prompt, model, effort, selected_claude, lead))
 
     def _run_turn(self, mode: str, approval: str, prompt: str, model: str,
-                  effort: str, claude_model: str) -> None:
+                  effort: str, claude_model: str, lead: str) -> None:
         if mode == "gpt_only":
             turn = self._codex_turn(prompt, model, effort, approval, "answer")
             self.messages.put(("verdict", (turn, "Codex")))
@@ -233,7 +237,7 @@ class DesktopHost:
             turn = self._claude_turn(prompt, claude_model, "answer")
             self.messages.put(("verdict", (turn, "Claude")))
         else:
-            self._collaborate(prompt, model, effort, claude_model, approval)
+            self._collaborate(prompt, model, effort, claude_model, approval, lead)
 
     def _codex_turn(self, text: str, model: str, effort: str, approval: str, role: str) -> TurnRecord:
         assert self.codex and self.workspace
@@ -244,7 +248,16 @@ class DesktopHost:
         self.messages.put(("line", f"\nCODEX {role.upper()} / {model} / native thread {runtime.thread_id}\n"))
         runtime.start_turn(text, model, effort or None)
         while True:
-            event = runtime.next_event(timeout=600)
+            try:
+                event = runtime.next_event(timeout=600)
+            except queue.Empty:
+                if runtime.active_turn_id:
+                    try:
+                        runtime.interrupt()
+                    except Exception:
+                        pass
+                event = Envelope("codex", runtime.thread_id, "turn_finished",
+                                 {"ok": False, "terminal_reason": "host_timeout"})
             turn.append(event)
             self.messages.put(("event", event))
             if event.kind in BLOCKING_KINDS:
@@ -255,6 +268,11 @@ class DesktopHost:
                     self._ask("unsupported_approval", event)
                     runtime.interrupt()
             if turn.finished:
+                if event.kind in {"runtime_error", "process_exited"} and runtime.active_turn_id:
+                    try:
+                        runtime.interrupt()
+                    except Exception:
+                        pass
                 self.history.append(turn)
                 return turn
 
@@ -286,15 +304,20 @@ class DesktopHost:
         return turn
 
     def _collaborate(self, prompt: str, model: str, effort: str,
-                     claude_model: str, approval: str) -> None:
+                     claude_model: str, approval: str, lead_provider: str) -> None:
         state = Collaboration()
         try:
-            lead = self._codex_turn(prompt, model, effort, approval, "draft, unapproved")
+            def provider_turn(provider: str, text: str, role: str) -> TurnRecord:
+                return (self._codex_turn(text, model, effort, approval, role) if provider == "codex"
+                        else self._claude_turn(text, claude_model, role))
+
+            partner_provider = "claude" if lead_provider == "codex" else "codex"
+            lead = provider_turn(lead_provider, prompt, "draft, unapproved")
             if not lead.ok or not lead.text.strip():
                 state.unavailable()
                 self.messages.put(("joint", state))
                 return
-            state.propose(lead.text)
+            state.propose(lead.text, lead_provider)
             packet = handoff_text(self.workspace.name, lead, prompt)
             packet = self._ask("handoff", packet)
             if packet is None:
@@ -304,15 +327,16 @@ class DesktopHost:
             digest = hashlib.sha256(state.candidate.encode("utf-8")).hexdigest()
             review_prompt = (f"Review this proposed answer and its workspace evidence. The handoff below is user-approved context, not native session transfer.\n\n{packet}\n\n"
                              f"Candidate SHA-256: {digest}\nReply exactly APPROVE {digest} only if you agree this exact candidate is the best answer; otherwise reply DISAGREE and explain why.")
-            partner = self._claude_turn(review_prompt, claude_model, "review, unapproved")
-            state.vote("claude", approves=partner.ok and partner.text.strip() == f"APPROVE {digest}", reviewed_text=state.candidate)
+            partner = provider_turn(partner_provider, review_prompt, "review, unapproved")
+            state.vote(partner_provider, approves=partner.ok and partner.text.strip() == f"APPROVE {digest}", reviewed_text=state.candidate)
             if state.state == "needs_user_decision":
                 self.messages.put(("joint", state))
                 return
-            confirmation = self._codex_turn(
-                f"Review your earlier candidate after Claude approved it. Check workspace evidence again. Reply exactly APPROVE {digest} only if you still agree this exact candidate is the best answer; otherwise reply DISAGREE and explain why. Do not modify files in this review.",
-                model, effort, "ask_every_edit", "final review, unapproved")
-            state.vote("codex", approves=confirmation.ok and confirmation.text.strip() == f"APPROVE {digest}", reviewed_text=state.candidate)
+            confirmation = provider_turn(
+                lead_provider,
+                f"Review your earlier candidate after {partner_provider} approved it. Check workspace evidence again. Reply exactly APPROVE {digest} only if you still agree this exact candidate is the best answer; otherwise reply DISAGREE and explain why. Do not modify files in this review.",
+                "final review, unapproved")
+            state.vote(lead_provider, approves=confirmation.ok and confirmation.text.strip() == f"APPROVE {digest}", reviewed_text=state.candidate)
             self.messages.put(("joint", state))
         except Exception:
             state.unavailable()
@@ -356,7 +380,7 @@ class DesktopHost:
             def choose(value: str) -> None:
                 result["value"] = value
                 window.destroy()
-            ttk.Button(window, text="Use Codex draft as my decision", state="normal" if data.candidate else "disabled",
+            ttk.Button(window, text=f"Use {data.source_provider.title()} draft as my decision", state="normal" if data.candidate else "disabled",
                        command=lambda: choose("use_draft")).pack(fill="x", padx=12, pady=4)
             ttk.Button(window, text="Leave pending and write a new instruction",
                        command=lambda: choose("leave_pending")).pack(fill="x", padx=12, pady=4)
@@ -419,7 +443,7 @@ class DesktopHost:
                     else:
                         self._line("\n[Collaboration unresolved. Drafts and reviews above are unapproved. Choose the next action.]\n")
                         if self._dialog("resolution", state) == "use_draft":
-                            self._line(f"\n[User selected Codex draft; not jointly approved]\n{state.candidate}\n")
+                            self._line(f"\n[User selected {state.source_provider} draft; not jointly approved]\n{state.candidate}\n")
                 elif kind == "error":
                     self._line(f"\n[Host failure: {data}. Turn unapproved.]\n")
                     self.status.set("Failed. See timeline; no approval was inferred.")
