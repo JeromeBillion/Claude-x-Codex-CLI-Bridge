@@ -16,6 +16,8 @@ import time
 from typing import Any
 
 from tools.runtime_events import Envelope
+# Shared with the Claude adapter: one explicit list of folders trusted for automatic edits.
+from tools.approval_modes import TrustedFolderStore  # noqa: F401 - re-exported
 
 
 class AppServerError(RuntimeError):
@@ -142,39 +144,6 @@ class ThreadStore:
         except FileNotFoundError:
             data = {}
         data[str(workspace.resolve())] = thread_id
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_name(self.path.name + ".tmp")
-        with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as handle:
-            json.dump(data, handle)
-        os.replace(temporary, self.path)
-
-
-class TrustedFolderStore:
-    """An explicit host-side trust choice, separate from Codex's project trust."""
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-
-    @staticmethod
-    def _key(workspace: Path) -> str:
-        return os.path.normcase(str(workspace.resolve(strict=True)))
-
-    def is_trusted(self, workspace: Path) -> bool:
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
-            return False
-        return isinstance(data, dict) and data.get(self._key(workspace)) is True
-
-    def trust(self, workspace: Path) -> None:
-        """Call only after the user explicitly trusts this exact folder in the UI."""
-        try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError):
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
-        data[self._key(workspace)] = True
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_name(self.path.name + ".tmp")
         with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as handle:
