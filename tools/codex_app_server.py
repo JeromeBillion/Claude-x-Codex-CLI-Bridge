@@ -302,12 +302,14 @@ class CodexRuntime:
         cursor: str | None = None
         seen: set[str] = set()
         while True:
-            params: dict[str, Any] = {"limit": 100, "includeHidden": False}
+            # The desktop must expose the installed CLI's full account catalog.
+            # Hidden entries are labeled by the UI, not silently discarded.
+            params: dict[str, Any] = {"limit": 100, "includeHidden": True}
             if cursor:
                 params["cursor"] = cursor
             page = self.transport.request("model/list", params)
             for model in page.get("data", []):
-                if not model.get("hidden"):
+                if isinstance(model.get("id"), str):
                     self.models[model["id"]] = model
             cursor = page.get("nextCursor")
             if not cursor:
@@ -365,7 +367,10 @@ class CodexRuntime:
         if effort and effort not in supported:
             raise ValueError("Reasoning effort is absent from this model's catalog entry")
         assert self.workspace is not None
-        params: dict[str, Any] = {"threadId": self.thread_id, "input": [{"type": "text", "text": text}], "model": model,
+        callable_model = self.models[model].get("model") or model
+        if not isinstance(callable_model, str):
+            raise ValueError("Catalog entry has no callable model name")
+        params: dict[str, Any] = {"threadId": self.thread_id, "input": [{"type": "text", "text": text}], "model": callable_model,
                                   "approvalPolicy": "onRequest", "cwd": str(self.workspace),
                                   "sandboxPolicy": {"type": self._sandbox_name()}}
         if self.approval_mode == "auto_accept_trusted":

@@ -48,6 +48,25 @@ class FakeTransport:
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_full_catalog_includes_hidden_entries_and_uses_callable_model_name(self):
+        class CatalogTransport(FakeTransport):
+            def request(self, method, params=None):
+                if method == "model/list":
+                    self.calls.append((method, params))
+                    return {"data": [{"id": "picker-id", "model": "callable-id", "hidden": True,
+                                      "supportedReasoningEfforts": []}]}
+                return super().request(method, params)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = CatalogTransport()
+            runtime = CodexRuntime(fake, ThreadStore(Path(tmp) / "state.json"))
+            runtime.discover()
+            self.assertEqual(set(runtime.models), {"picker-id"})
+            self.assertTrue(next(params for method, params in fake.calls if method == "model/list")["includeHidden"])
+            runtime.open_thread(Path(tmp))
+            runtime.start_turn("hello", "picker-id")
+            self.assertEqual(fake.calls[-1][1]["model"], "callable-id")
+
     def test_catalog_turn_and_resume_after_restart(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
