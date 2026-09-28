@@ -373,6 +373,7 @@ class ClaudeSession:
         self._pending_approvals: dict[str, dict[str, Any]] = {}
         self._tools: dict[str, dict[str, Any]] = {}  # tool_use_id -> {"tool", "asked"}
         self._events: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        self._write_lock = threading.Lock()
         try:
             self.process = spawn(command, cwd=self.workspace, env=session_env(), stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
@@ -476,11 +477,13 @@ class ClaudeSession:
 
     def _send(self, message: dict[str, Any]) -> None:
         assert self.process.stdin is not None
-        try:
-            self.process.stdin.write(json.dumps(message) + "\n")
-            self.process.stdin.flush()
-        except (OSError, ValueError):
-            raise RuntimeRefused("cli_connection_closed") from None
+        # The UI thread's Stop button and the turn worker can both write.
+        with self._write_lock:
+            try:
+                self.process.stdin.write(json.dumps(message) + "\n")
+                self.process.stdin.flush()
+            except (OSError, ValueError):
+                raise RuntimeRefused("cli_connection_closed") from None
 
     def _control(self, request_id: str, request: dict[str, Any]) -> None:
         self._send({"type": "control_request", "request_id": request_id, "request": request})

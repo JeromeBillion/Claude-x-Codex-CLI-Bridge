@@ -13,16 +13,25 @@ catalog, including hidden entries, and the selected entry's callable `model`
 field is passed per turn. `ThreadStore` keeps the native thread ID in the user's
 local app state. The UI never substitutes a fixed model list.
 
-For Claude, the host calls `preflight()` for its dynamic model menu, then
-`ClaudeSession(...).send()`, `events()` and `answer_approval()`. The host blocks
-Fable or `best` until explicit confirmation for each newly spawned Claude
-session. A consent flag is consumed at session construction. It requires
-the existing `TrustStore` before headless Claude execution. Claude's adapter
-currently does not expose a user-selected approval policy, so the host refuses
-the auto-accept choice when Claude or collaboration is selected. The Claude
-lane can add a `permission_mode` argument to `ClaudeSession` with a safe default
-and then connect that argument in the host. Auto-accept must remain scoped to
-the exact trusted folder.
+For Claude, the host calls `preflight()`. Its `models` field is the live,
+callable menu, with `value`, `resolved_model`, `display_name`, `effort_levels`
+and `credit_billed`; `models_report` is the redacted form. The host then calls
+`ClaudeSession(...).send()`, `events()` and `answer_approval()`.
+- **Fable.** When the user confirms a credit-billed model (Fable, or a
+  `default` that currently resolves to Fable), the host creates a
+  `CreditConsent`. `ClaudeSession(credit_consent=...)` binds it to exactly one
+  session. Without it, the adapter refuses before spawning. It re-checks
+  against the chat process's own live menu, and `set_model` is checked too.
+- **Run trust.** The existing `TrustStore` must hold the workspace before any
+  headless Claude execution.
+- **Approval toggle.** `ClaudeSession(approval_mode=, auto_trust=)` applies
+  the toggle, and `set_approval_mode()` can change it between turns only.
+  `auto_trust` is the same `TrustedFolderStore` Codex uses, so one explicit
+  list of folders is trusted for automatic edits.
+- **Approval events.** Every Claude `approval_request` carries
+  `policy: "ask" | "auto_accept"`. The host answers only `ask` requests. An
+  auto-accepted one is followed by `approval_decision` with
+  `by: "auto_trusted"`, and a user answer produces `by: "user"`.
 
 `ask_every_edit` currently uses Codex `readOnly` with `onRequest`; the timeline
 states that this is proposal-only. A per-edit staged diff/accept/apply path is

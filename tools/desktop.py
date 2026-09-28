@@ -15,7 +15,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable
 
-from tools.claude_runtime import CREDIT_BILLED, ClaudeSession, Preflight, TrustStore, preflight
+from tools.claude_runtime import (ClaudeSession, CreditConsent, Preflight, RuntimeRefused, TrustStore,
+                                  is_credit_billed, preflight)
 from tools.codex_app_server import AppServerTransport, CodexRuntime, ThreadStore, TrustedFolderStore
 from tools.codex_probe import safe_child_env
 from tools.desktop_state import BLOCKING_KINDS, Collaboration, TurnRecord, handoff_text
@@ -42,10 +43,12 @@ class DesktopHost:
         self.claude_preflight: Preflight | None = None
         self.claude_session: ClaudeSession | None = None
         self.claude_model: str | None = None
-        self.fable_consent_pending = False
+        # The user's yes for credit-billed Claude models, consumed by the next new Claude session.
+        self.claude_consent: CreditConsent | None = None
         self.history: list[TurnRecord] = []
         state = private_state_dir()
         self.codex_threads = ThreadStore(state / "codex-threads.json")
+        # One list of folders trusted for automatic edits, shared by both providers.
         self.codex_trust = TrustedFolderStore(state / "codex-trusted.json")
         self.claude_trust = TrustStore(state / "claude-trusted.json")
 
@@ -125,7 +128,7 @@ class DesktopHost:
         if self.workspace != workspace:
             self._disconnect()
             self.history.clear()
-            self.fable_consent_pending = False
+            self.claude_consent = None
         self.workspace = workspace
         self.project_label.configure(text=str(workspace))
 
@@ -137,6 +140,9 @@ class DesktopHost:
         def run() -> None:
             try:
                 action()
+            except RuntimeRefused as exc:
+                # Adapter refusals carry a fixed reason code (e.g. cli_too_old), never private text.
+                self.messages.put(("error", f"Claude refused: {exc}"))
             except Exception as exc:
                 # Error messages may contain local paths or account details; show only type.
                 self.messages.put(("error", type(exc).__name__))
@@ -200,12 +206,9 @@ class DesktopHost:
         if mode != "claude_only" and not self.codex_model.get() or mode != "gpt_only" and not self.claude_choice.get():
             messagebox.showinfo("Model needed", "Choose a model from each selected provider's live catalog.")
             return
-        if approval == "auto_accept_trusted" and mode != "gpt_only":
-            messagebox.showwarning("Claude approval mode pending",
-                                   "Claude auto-accept is not wired into this host yet. Choose ask_every_edit for Claude or collaboration.")
-            return
         if approval == "auto_accept_trusted":
-            codex_needs_trust = mode != "claude_only" and not self.codex_trust.is_trusted(self.workspace)
+            # The auto-edit trust list is shared: Claude-only auto mode needs it too.
+            codex_needs_trust = not self.codex_trust.is_trusted(self.workspace)
             claude_needs_trust = mode != "gpt_only" and not self.claude_trust.is_trusted(self.workspace)
             if codex_needs_trust or claude_needs_trust:
                 if not messagebox.askyesno("Trust this exact folder?", f"Allow automatic edits in:\n{self.workspace}\n\nProject hooks and MCP servers may run."):
@@ -219,10 +222,13 @@ class DesktopHost:
                 return
             self.claude_trust.trust(self.workspace)
         selected_claude = self.claude_choice.get()
-        if mode != "gpt_only" and CREDIT_BILLED.search(selected_claude) and self._new_claude_session(selected_claude):
-            if not messagebox.askyesno("Fable credits", "Fable may consume usage credits in a headless session. Allow it for this Claude session?"):
+        if mode != "gpt_only" and self._claude_credit_billed(selected_claude) \
+                and self._new_claude_session(selected_claude) and self.claude_consent is None:
+            if not messagebox.askyesno("Fable credits", f"{selected_claude} may consume usage credits in a headless "
+                                       "session, without Claude Code's own consent prompt.\n\nAllow it for this "
+                                       "one Claude session? A new or resumed session asks again."):
                 return
-            self.fable_consent_pending = True
+            self.claude_consent = CreditConsent(confirmed_by_user=True)
         self.prompt.delete("1.0", "end")
         self._line(f"\nUSER ({mode}): {prompt}\n")
         model, effort, lead = self.codex_model.get(), self.codex_effort.get(), self.collaboration_lead.get()
@@ -234,7 +240,7 @@ class DesktopHost:
             turn = self._codex_turn(prompt, model, effort, approval, "answer")
             self.messages.put(("verdict", (turn, "Codex")))
         elif mode == "claude_only":
-            turn = self._claude_turn(prompt, claude_model, "answer")
+            turn = self._claude_turn(prompt, claude_model, "answer", approval)
             self.messages.put(("verdict", (turn, "Claude")))
         else:
             self._collaborate(prompt, model, effort, claude_model, approval, lead)
@@ -276,37 +282,47 @@ class DesktopHost:
                 self.history.append(turn)
                 return turn
 
+    def _claude_credit_billed(self, model: str) -> bool:
+        # The live menu knows when "default" currently resolves to Fable; the adapter re-checks at spawn.
+        rows = self.claude_preflight.models if self.claude_preflight else []
+        return any(row.get("value") == model and row.get("credit_billed") for row in rows) or is_credit_billed(model)
+
     def _new_claude_session(self, model: str) -> bool:
         return (self.claude_session is None or self.claude_model != model
                 or self.claude_session.process.poll() is not None)
 
-    def _claude_turn(self, text: str, model: str, role: str) -> TurnRecord:
+    def _claude_turn(self, text: str, model: str, role: str, approval: str = "ask_every_edit") -> TurnRecord:
         assert self.claude_preflight and self.workspace
         if self._new_claude_session(model):
             previous = self.claude_session
             native = previous.session_ref if previous else None
             if previous:
                 previous.close()
-            if CREDIT_BILLED.search(model) and not self.fable_consent_pending:
-                raise RuntimeError("Fable requires consent for this Claude session")
+                self.claude_session = None
+            # The adapter refuses a credit-billed model without this consent, before spawning.
+            consent, self.claude_consent = self.claude_consent, None
             self.claude_session = ClaudeSession(
                 self.claude_preflight, self.workspace, model=model,
-                resume=native, trust=self.claude_trust,
-                allow_credit_models=self.fable_consent_pending)
-            self.fable_consent_pending = False
+                resume=native, trust=self.claude_trust, credit_consent=consent,
+                approval_mode=approval, auto_trust=self.codex_trust)
             self.claude_model = model
         session = self.claude_session
+        if session.approval_mode != approval:
+            session.set_approval_mode(approval, self.codex_trust)  # between turns only
         turn = TurnRecord("claude", model)
-        self.messages.put(("line", f"\nCLAUDE {role.upper()} / {model} / native session {session.session_ref or 'pending'}\n"))
+        self.messages.put(("line", f"\nCLAUDE {role.upper()} / {model} / {approval} / native session {session.session_ref}\n"))
         session.send(text)
         for event in session.events():
-            turn.append(event)
             self.messages.put(("event", event))
-            if event.kind == "approval_request":
+            if turn.finished:
+                continue  # a runtime error already failed the turn; drain to the CLI's own end
+            turn.append(event)
+            # Auto-accepted edits are already answered by the adapter; only "ask" blocks on the user.
+            if event.kind == "approval_request" and event.data.get("policy") == "ask":
                 decision = self._ask("claude_approval", event)
                 session.answer_approval(str(event.data["request_id"]), allow=decision is True)
-            if turn.finished:
-                break
+            if turn.finished and event.kind == "runtime_error":
+                session.interrupt()
         self.history.append(turn)
         return turn
 
@@ -316,7 +332,7 @@ class DesktopHost:
         try:
             def provider_turn(provider: str, text: str, role: str) -> TurnRecord:
                 return (self._codex_turn(text, model, effort, approval, role) if provider == "codex"
-                        else self._claude_turn(text, claude_model, role))
+                        else self._claude_turn(text, claude_model, role, approval))
 
             partner_provider = "claude" if lead_provider == "codex" else "codex"
             lead = provider_turn(lead_provider, prompt, "draft, unapproved")
@@ -421,7 +437,8 @@ class DesktopHost:
                     event: Envelope = data
                     if event.kind == "text_delta":
                         self._line(str(event.data.get("text", "")))
-                    elif event.kind in {"rate_limit", "runtime_error", "process_exited", "notice", "tool_started", "tool_finished"}:
+                    elif event.kind in {"rate_limit", "runtime_error", "process_exited", "notice", "tool_started",
+                                        "tool_finished", "approval_decision", "session_started"}:
                         self._line(f"\n[{event.provider} {event.kind}: {event.data}]\n")
                 elif kind == "codex_catalog":
                     models = list(self.codex.models) if self.codex else []
@@ -439,7 +456,15 @@ class DesktopHost:
                     self.claude_picker.configure(values=models)
                     if models:
                         self.claude_choice.set(models[0])
-                    self._line(f"\nClaude connected. {len(models)} catalog choices.\n")
+                    pre = self.claude_preflight
+                    version = ".".join(map(str, pre.version)) if pre and pre.version else "unknown"
+                    self._line(f"\nClaude connected. CLI {version} ({pre.version_status if pre else 'unknown'}), "
+                               f"plan {pre.account.get('plan') if pre else 'unknown'}. {len(models)} menu choices:\n")
+                    for row in data:
+                        credit = "  [asks before use: may bill usage credits]" if row.get("credit_billed") else ""
+                        target = row.get("resolved_model")
+                        target = f" -> {target}" if target not in (None, row["value"]) else ""
+                        self._line(f"  {row['value']}{target} ({row.get('display_name')}){credit}\n")
                 elif kind == "verdict":
                     turn, owner = data
                     self._line(f"\n[{owner} {'answer complete' if turn.ok else 'failed or incomplete: ' + str(turn.failure)}]\n")
