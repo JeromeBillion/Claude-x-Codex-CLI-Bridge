@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -61,6 +62,24 @@ class VersionAndDiscoveryTests(unittest.TestCase):
             exe.unlink()
             with self.assertRaises(RuntimeRefused):
                 discover_claude({"PATH": "", "USERPROFILE": profile})
+
+
+class ImportTests(unittest.TestCase):
+    def test_adapter_imports_from_any_directory_and_as_a_package(self) -> None:
+        repo = TOOLS_DIR.parent
+        checks = {
+            "flat, outside the repo": (f"import sys; sys.path.insert(0, {str(TOOLS_DIR)!r}); import claude_runtime",
+                                       tempfile.gettempdir()),
+            "package, from the repo root": ("import tools.claude_runtime", str(repo)),
+            "shared envelope class": (
+                "import sys; sys.path.insert(0, 'tools'); import claude_runtime, tools.runtime_events; "
+                "assert claude_runtime.Envelope is tools.runtime_events.Envelope", str(repo)),
+        }
+        for name, (code, cwd) in checks.items():
+            with self.subTest(name):
+                done = subprocess.run([sys.executable, "-c", code], cwd=cwd, capture_output=True, text=True,
+                                      timeout=60, check=False)
+                self.assertEqual(done.returncode, 0, done.stderr[-500:])
 
 
 class NormalizeTests(unittest.TestCase):
