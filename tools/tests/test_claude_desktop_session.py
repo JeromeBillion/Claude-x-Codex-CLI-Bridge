@@ -297,10 +297,22 @@ class DesktopSessionTests(FakeCliFixture):
             session._check_model("default")
 
     def test_an_unconsented_credit_model_reported_by_the_cli_stops_the_turn(self) -> None:
-        seen = self.run_turn(self.open(), "FABLE INIT")
+        session = self.open()
+        seen = self.run_turn(session, "FABLE INIT")
         errors = [e.data for e in seen if e.kind == "runtime_error"]
         self.assertEqual(errors, [{"category": "billing", "code": "unconsented_credit_model"}])
         self.assertTrue(any(c.get("interrupted") for c in self.calls()))
+        with self.assertRaises(RuntimeRefused) as caught:  # no retry loop that restarts Fable each Send
+            session.send("Reply OK")
+        self.assertEqual(str(caught.exception), "session_needs_restart")
+
+    def test_menu_matching_ignores_case(self) -> None:
+        session = self.open()
+        session.menu = local_menu([{"value": "opus", "resolvedModel": "claude-fable-5"},
+                                   {"value": "default", "resolvedModel": "claude-fable-5-1"}])
+        for alias in ("OPUS", "Opus", "DEFAULT", "Default"):
+            with self.subTest(alias), self.assertRaises(RuntimeRefused):
+                session._check_model(alias)
 
     def test_a_failed_turn_declines_later_requests_even_in_auto_mode(self) -> None:
         (self.root / "a.txt").write_text("a", encoding="utf-8")

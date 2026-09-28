@@ -382,10 +382,8 @@ class DesktopHost:
             session = self.claude_session
 
             def stop() -> None:
-                try:
-                    session.interrupt()
-                except RuntimeRefused:
-                    pass  # the process already ended
+                # Stop fails the turn: an auto-accept edit arriving after Stop is declined too.
+                session.fail_turn()
             threading.Thread(target=stop, daemon=True).start()
 
     def _dialog(self, kind: str, data: Any) -> Any:

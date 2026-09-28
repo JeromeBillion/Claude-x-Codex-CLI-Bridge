@@ -440,7 +440,9 @@ class ClaudeSession:
     def _check_model(self, model: str) -> None:
         if not isinstance(model, str) or not MODEL_VALUE.fullmatch(model):
             raise RuntimeRefused("invalid_model_value")
-        rows = [row for row in self.menu if row.get("value") == model or row.get("resolved_model") == model]
+        folded = model.casefold()  # aliases may resolve case-insensitively in the CLI
+        rows = [row for row in self.menu
+                if str(row.get("value")).casefold() == folded or str(row.get("resolved_model")).casefold() == folded]
         billed = is_credit_billed(model) or any(
             row.get("credit_billed") or is_credit_billed(row.get("resolved_model"), row.get("display_name"))
             for row in rows)
@@ -448,7 +450,7 @@ class ClaudeSession:
             raise RuntimeRefused("model_may_bill_usage_credits")
 
     def _spawn_model(self, model: str) -> str:
-        if model != "default":
+        if model.casefold() != "default":
             return model
         return next((row["resolved_model"] for row in self.menu
                      if row.get("value") == "default" and row.get("resolved_model")), model)
@@ -580,7 +582,9 @@ class ClaudeSession:
             return
         elif kind == "session_started" and is_credit_billed(data.get("model")) and self._credit_consent is None:
             # The CLI is running a credit-billed model nobody consented to (e.g. set by a settings file).
+            # Refuse further turns here too, or every Send would start a Fable request again.
             self.fail_turn()
+            self._needs_restart = True
             yield envelope
             yield Envelope(PROVIDER, self.session_ref, "runtime_error", {"category": "billing",
                                                                          "code": "unconsented_credit_model"})
