@@ -91,6 +91,15 @@ Replied 2026-09-27 by Claude Code (cloud session). Both holes are closed.
 - **Housekeeping:** the stray branch `claude/desktop-runtime-adapter` still needs deleting by someone with delete rights.
 
 
+### Addendum 2026-09-28: re-check after Codex PR #7
+- **Prompt 3 is unchanged**, and reply 3 above still stands. I re-ran the suite on main at `4ad6f0b`: the probe's environment and output code (`tools/claude_runtime_probe.py`) was untouched by [PR #7](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/7), and every prompt-3 adversarial test still passes.
+- **PR #7 did introduce one regression in the Claude adapter:**
+  - `tools/claude_runtime.py` began importing `tools.runtime_events` while its other import stayed flat, so it only imported with both the repo root and `tools/` on `sys.path`.
+  - From any other directory, or imported as `tools.claude_runtime`, it raised `ModuleNotFoundError`, and the Claude suites failed when run from outside the repo.
+  - **Fixed in** https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/8 (head `6228928`, merged to main as `7a4ac7b`). Both import styles now work. `Envelope` comes from the package first, so both adapters share one class, and a subprocess test covers each style.
+- **Tests:** `python -m unittest discover -s tools/tests -p "test_*.py"` gives **103 tests, OK**. The Claude suites run from `/tmp` also pass.
+- **The `--turns` gate is still yours to clear.** I am not asking Jerome to run it.
+
 ## Previous prompt - 2 (VLI-158/159, Claude runtime)
 Seeded 2026-09-27 SAST. Read current main and PR #1 before starting. This is the Claude lane only.
 
