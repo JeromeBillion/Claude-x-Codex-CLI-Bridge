@@ -16,13 +16,17 @@ sys.path.insert(0, str(TOOLS_DIR))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import claude_runtime_probe as probe_module  # noqa: E402
+from approval_modes import AUTO_ACCEPT_TRUSTED, TrustedFolderStore  # noqa: E402
 from claude_runtime import (  # noqa: E402
     ClaudeSession,
+    CreditConsent,
     Envelope,
+    Preflight,
     RuntimeRefused,
     TrustStore,
     build_handoff,
     discover_claude,
+    local_menu,
     normalize,
     session_env,
     parse_version,
@@ -51,6 +55,9 @@ class VersionAndDiscoveryTests(unittest.TestCase):
         self.assertEqual(version_status((2, 1, 283)), "tested")
         self.assertEqual(version_status((2, 2, 0)), "newer_untested")
         self.assertEqual(version_status((2, 1, 100)), "too_old")
+        # Jerome's installed Windows CLI (2026-09-28) runs, labeled untested, instead of being refused.
+        self.assertEqual(version_status((2, 1, 201)), "older_untested")
+        self.assertEqual(version_status((2, 1, 200)), "too_old")
         self.assertEqual(version_status(parse_version("garbage")), "unknown")
 
     def test_discovery_falls_back_to_the_native_windows_install(self) -> None:
@@ -123,7 +130,9 @@ class TrustTests(unittest.TestCase):
             self.assertTrue(TrustStore(store.path).is_trusted(workspace))
 
 
-class SessionTests(unittest.TestCase):
+class FakeCliFixture(unittest.TestCase):
+    """A trusted temp workspace, planted billing variables and a preflight against the fake CLI."""
+
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -148,10 +157,16 @@ class SessionTests(unittest.TestCase):
         self.addCleanup(session.close)
         return session
 
+
+class SessionTests(FakeCliFixture):
     def test_preflight_reports_plan_and_models_without_a_model_call(self) -> None:
         self.assertEqual(self.pre.account["plan"], "Claude Max")
         self.assertEqual(self.pre.version_status, "tested")
         self.assertEqual(self.pre.models[0]["value"], "haiku")
+        # The local picker gets real, callable values; only the report is redacted.
+        values = [row["value"] for row in self.pre.models]
+        self.assertIn("claude-fable-5[1m]", values)
+        self.assertEqual([row["value"] for row in self.pre.models_report][-1], "opus")
         self.assertNotIn("user_turn", self.log.read_text(encoding="utf-8"))
 
     def test_preflight_refuses_an_api_billed_login(self) -> None:
@@ -197,7 +212,7 @@ class SessionTests(unittest.TestCase):
         with self.assertRaises(RuntimeRefused):
             session.answer_approval("forged-id", True)
         session.answer_approval(request.data["request_id"], True)
-        self.assertEqual([e.kind for e in events], ["turn_finished"])
+        self.assertEqual([e.kind for e in events], ["approval_decision", "turn_finished"])
         self.assertTrue((self.root / "note.txt").exists())
 
     def test_interrupt_ends_the_turn_as_an_error(self) -> None:

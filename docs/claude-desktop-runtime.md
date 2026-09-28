@@ -1,8 +1,13 @@
 # Claude Code desktop runtime adapter (VLI-158/159)
 
-Status: design plus a first vertical slice (`tools/claude_runtime.py`). The
-slice is tested against a fake CLI and CLI 2.1.283 in a Linux container. It is
-**not yet proven on Jerome's Windows PC or his plan.**
+Status: adapter slice (`tools/claude_runtime.py`), wired into the shared desktop
+host (`tools/desktop.py`). It is tested against a fake CLI, and CLI 2.1.283 was
+observed in a Linux container. On Jerome's Windows PC (2026-09-28) the adapter's
+**preflight only** has run, with no model call. It found CLI 2.1.201 through the
+npm `.cmd` shim, a `claude.ai` login on Claude Team, `firstParty`, no API key
+source, and a five-entry menu that includes Fable. **No turn, approval, resume
+or interrupt has been exercised on his PC.** Windows runtime acceptance remains
+open.
 
 Scope is Jerome's own Windows desktop. His own installed, signed-in Claude
 Code and Codex CLIs drive it, and CLI mode (`bridge.ps1`) stays. Out of scope:
@@ -29,7 +34,11 @@ discover → preflight → trust gate → spawn chat process → turns … → c
 
 1. **Discover.** Search `PATH` first. Then try `%USERPROFILE%\.local\bin\claude.exe` (native installer), then `%APPDATA%\npm\claude.cmd` (npm shim). If none is found, return `claude_not_installed`, and the UI links to the official install page. Never bundle a binary or use the Agent SDK's bundled one.
 2. **Preflight** makes no model call:
-   - **Version.** Parse `claude --version`. Below `MIN_VERSION` (2.1.280) the adapter refuses with `cli_too_old`. Above `TESTED_VERSION` it runs but shows "untested CLI". Re-run the probe after every CLI update.
+   - **Version.** Parse `claude --version`.
+     - Below `MIN_VERSION` (2.1.201) the adapter refuses with `cli_too_old`. 2.1.201 is the oldest CLI seen with every flag the adapter passes and a model menu in `initialize`: Jerome's install.
+     - Exactly `TESTED_VERSION` (2.1.283), whose turn shapes were observed, is `tested`. Anything else runs, labeled `older_untested` or `newer_untested`.
+     - The earlier floor of 2.1.280 would have refused Jerome's installed CLI outright.
+     - Re-run the probe after every CLI update.
    - **Auth.** `claude auth status --json` must exit 0 and report `loggedIn`.
    - **Plan.** Start a stream-json process with no tools and send `control_request` `initialize`. `account.subscriptionType` must be Claude Pro, Max, Team or Enterprise. `apiProvider` must be `firstParty` and no `apiKeySource` may be present. Otherwise the adapter refuses (`not_a_subscription_plan`, `not_first_party` or `api_key_source_present`). "Claude API" is refused.
    - The same response gives `models[]`, the model menu.
@@ -38,8 +47,16 @@ discover → preflight → trust gate → spawn chat process → turns … → c
    ```
    claude --print --input-format stream-json --output-format stream-json --verbose
           --include-partial-messages --permission-prompt-tool stdio --permission-mode default
-          --model <menu value> (--session-id <uuid> | --resume <id>)
+          --settings <temp ask-rules file> --model <menu value, default pinned> [--effort <level>]
+          (--session-id <uuid> | --resume <id>)
    ```
+   - **Model flag.** `--model` is always passed. `default` is pinned to the menu's current `resolvedModel`, because without `--model` the CLI would read the model from a user or project settings file that the consent check cannot see.
+   - **Session IDs.** Every new chat gets a `--session-id` up front, so its native ID is known before the first event. Session IDs (`--session-id`, `--resume`, and IDs adopted from events) must be UUIDs.
+   - **Model check at start.** If the CLI's `system/init` reports a credit-billed model the session has no consent for, the turn is interrupted with `runtime_error` `billing` / `unconsented_credit_model`.
+   - **Initialize.** The adapter sends `initialize` in the chat process, as the Agent SDK does. It then re-checks that reply's account (first party, subscription plan, no API key source) and refreshes the menu from it. A mismatch closes the process before any user turn.
+   - **`.cmd` shims.** Through an npm `.cmd` shim, any argument containing `% " & | < > ^ ( ) !`, CR, LF or NUL is refused (`unsafe_cmd_argument`), because `cmd.exe` would rewrite or execute it.
+   - **Failed turns.** After the host fails a turn (`fail_turn()`), any request still in flight is declined, auto-accept included (`policy: declined_failed_turn`).
+   - **Host timeout.** A host timeout interrupts the CLI and marks the session `needs_restart`. The host then opens a new `--resume` session instead of reading the old turn's leftovers.
    - Environment, in two tiers:
      - Preflight (and the probe) run with `child_env()`, a strict allowlist of OS, profile, locale, proxy/CA and `CLAUDE_CONFIG_DIR` variables.
      - Chat sessions run with `session_env()`. It keeps the user's development environment but removes every `ANTHROPIC_*`, `CLAUDE_CODE_USE_*`, `CLAUDE_CODE_SKIP_*`, `CLAUDE_CODE_OAUTH_TOKEN*` and `CLAUDE_CODE_API_KEY*` variable, plus `AWS_BEARER_TOKEN_BEDROCK`, `VERTEX_REGION_*`, `CLOUD_ML_REGION` and `NODE_OPTIONS`. General AWS, Google Cloud and Azure credentials stay available to the user's own tools, but they cannot route Claude billing without the stripped provider switches.
@@ -65,6 +82,9 @@ each provider's native ID and is never translated.
 | `system` `model_refusal_fallback` / `api_retry` | `notice` | `original_model`, `fallback_model`, `trigger` | inline notice: "Fable stopped; continued on Opus 4.8" |
 | `system` `init` | `session_started` | `model`, `permission_mode`, `api_key_source` | header; alarm if `api_key_source` ≠ none |
 | `result` | `turn_finished` | `ok` (= `is_error is False`), `subtype`, `terminal_reason`, `api_error_status`, `permission_denials`, `models_served` | end of turn |
+| host answer (user or trusted-folder auto) | `approval_decision` | `request_id`, `decision` (`accept` / `decline`), `by` (`user` / `auto_trusted`) | resolves the approval card |
+| `assistant` message with `error` | `runtime_error` | `category` (`auth` / `billing` / `limit` / `connection` / `other`), `code` from a fixed set | banner; turn fails |
+| host-decided tool finished with no host approval | `notice` | `subtype: ran_without_host_approval`, `tool` | warning: an ask rule was bypassed |
 | process EOF | `process_exited` | `exit_code` | "runtime stopped", with a resume button |
 
 Codex mapping added by the Codex lane (VLI-158/159):
@@ -101,12 +121,42 @@ Rules:
 
 - **Menu.** Always build it from `initialize.models` (`value`, `resolvedModel`, `displayName`, effort levels). Never hard-code names. Fable, Opus, Sonnet and Haiku appeared in the container's menu; Jerome's plan menu is **unproven**.
 - **`set_model`.** A `control_request` `set_model` switches the model mid-session; this was observed switching Haiku to Sonnet. It is sent between turns.
-- **Hidden credit costs.** In `-p`, Fable "bills it without asking" when a request would draw on usage credits. The adapter refuses Fable models, both at spawn and on `set_model`, unless the UI passes `allow_credit_models=True` after an explicit per-session confirmation.
+- **Menu passthrough.** `Preflight.models` keeps every offered value exactly, including `[1m]` suffixes and IDs the probe's fixed sets do not know. The redacted names (`unlisted-claude-opus`) could never be passed back to `--model`. Values that are unsafe on a command line are dropped.
+- **Hidden credit costs.** In `-p`, Fable "bills it without asking" when a request would draw on usage credits.
+  - The adapter refuses a credit-billed model before spawning, and on `set_model`, unless the UI passes a `CreditConsent` made after an explicit confirmation. A credit-billed model is one whose value, resolved model or display name matches Fable or `best`; that includes a `default` that resolves to Fable.
+  - A consent binds to one `ClaudeSession`. Reusing it in another session, a resumed process included, is refused (`credit_consent_already_used`).
 - **Interrupt.** A `control_request` `interrupt` ends the turn with `turn_finished` `ok=false`, `terminal_reason: aborted_streaming`.
 - **Resume.** New chats get `--session-id <uuid>` and reopened chats get `--resume <uuid>`; `--fork-session` branches a chat.
   - The CLI owns the transcript (`%USERPROFILE%\.claude\projects\…\<id>.jsonl`). Its format is internal and it is pruned after 30 days.
   - The app keeps its own envelope log for rendering history, and treats the session ID only as a resume handle.
 - **Consumer chats.** There is no import from claude.ai consumer chats. No supported interface exists for it, and the app does not claim one.
+
+## Approval toggle (VLI-159, Jerome's locked decision)
+
+**Ask for every edit** is the default. **Auto-accept in trusted folders** needs
+a separate, explicit trust grant for that exact folder (`TrustedFolderStore`,
+shared with Codex). It can change only between turns.
+
+- **Routing.** Every chat process gets `--settings` with `permissions.ask` for
+  `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `Bash` and `PowerShell`. Ask
+  rules outrank allow rules from any settings source
+  (https://code.claude.com/docs/en/permissions), so the user's or a project's
+  own allow rules cannot let an edit or command skip the host. The mode does
+  not change these flags, so it can switch without a respawn.
+- **Ask mode.** Every such request is a blocking card (`policy: "ask"`).
+- **Auto mode.** The host accepts a file-edit request only if its single target
+  resolves strictly inside the trusted folder. The resolution follows existing
+  symlinks and junctions. `..`, other absolute paths and agent-configuration
+  paths are rejected: `.git`, `.claude`, `.codex`, `.mcp.json`,
+  `.agent-bridge`, `.vscode`, `.github`, `.husky` and `.claude.json`, compared after stripping Windows's trailing dots and spaces. Any NTFS stream spelling (`name:stream`, `::$DATA`) and any 8.3 short name (`~1`) is also refused. An edit there could grant the agent new hooks,
+  MCP servers or permissions. The allowed input is pinned to the validated
+  absolute path. Commands always ask, because Claude Code has no command
+  sandbox on Windows. Revoking folder trust takes effect at the next request.
+- **Backstop.** If a file-edit or command tool finishes successfully without
+  reaching the host, the adapter emits `notice`
+  `ran_without_host_approval`, so a bypass is visible, not silent.
+- **Unverified live.** Ask-rule precedence and `--settings` merging are taken
+  from the docs and fake-CLI tests. They have not been observed in a real turn.
 
 ## Context handoff to Codex
 
@@ -138,45 +188,69 @@ turn of a new Claude session.
 | Process died | `process_exited` | resume button |
 | Host timeout (600s with no event) | `turn_finished` `subtype=host_timeout` | interrupt, then offer a resume |
 
-## First vertical slice (implemented in `tools/claude_runtime.py`)
-
-The slice covers one chat: preflight, trust gate, a streamed turn, one approval
-round trip, interrupt, `set_model`, `--resume`, and a handoff packet. It has no
-GUI yet. The desktop shell (VLI-158) consumes `ClaudeSession.events()`.
+## Slice (implemented in `tools/claude_runtime.py`, driven by `tools/desktop.py`)
 
 ```python
-pre = preflight()                         # raises RuntimeRefused(reason)
+pre = preflight()                         # raises RuntimeRefused(reason); pre.models is the live menu
 trust.trust(workspace)                    # only after the user clicks "Trust"
-s = ClaudeSession(pre, workspace, model="sonnet", session_id=new_uuid, trust=trust)
-s.send("…"); for env in s.events(): render(env)
-s.answer_approval(req_id, allow=True)     # or allow=False
+consent = CreditConsent(confirmed_by_user=True)   # only if the user said yes to Fable for THIS session
+s = ClaudeSession(pre, workspace, model="claude-fable-5[1m]", trust=trust, credit_consent=consent,
+                  approval_mode="ask_every_edit", auto_trust=auto_edit_folders)
+s.send("..."); for env in s.events(): render(env)   # answer only approval_request with policy "ask"
+s.answer_approval(req_id, allow=True)     # or allow=False; emits approval_decision
+s.set_approval_mode("auto_accept_trusted", auto_edit_folders)   # between turns
 s.set_model("opus"); s.interrupt(); s.close()
-ClaudeSession(pre, workspace, model="sonnet", resume=session_id, trust=trust)
+ClaudeSession(pre, workspace, model="sonnet", resume=s.session_ref, trust=trust)
 ```
 
-Acceptance tests (`tools/tests/test_claude_runtime.py`, against `fake_claude_cli.py`):
-- version guard and Windows native-install discovery
-- every row of the event mapping, and the `is_error` verdict
-- trust is explicit and persisted
-- an API-billed login is refused, and preflight makes no model call
-- a planted `ANTHROPIC_API_KEY` never reaches a child
-- an untrusted workspace and silent Fable (at spawn and on `set_model`) are refused
-- streamed turn → `text_delta`, `rate_limit`, `notice`, `turn_finished`
-- an approval allows exactly the proposed input, and a forged approval ID is refused
-- interrupt produces `aborted_streaming`
-- `--resume` is passed through
-- the handoff packet is bounded and disclaims native transfer
+Acceptance tests, all against `fake_claude_cli.py`, with no model contacted:
+- `tools/tests/test_claude_runtime.py`
+  - the version guard, including 2.1.201 accepted as `older_untested`, and Windows native-install discovery
+  - every row of the event mapping, and the `is_error` verdict
+  - explicit trust
+  - API-billed login refused, and no model call in preflight
+  - planted billing variables never reaching a child
+  - a streamed turn, an approval round trip, interrupt and resume
+  - a bounded handoff
+- `tools/tests/test_claude_desktop_session.py`
+  - Fable consent:
+    - refused before spawn
+    - single-use, with a resumed process asking again
+    - mid-session `set_model`
+    - a `default` that resolves to Fable in the live menu only
+  - the live menu passing through exactly
+  - the chat process's own plan re-check
+  - an API-key source reported mid-turn causing an interrupt
+  - assistant `billing_error` becoming `runtime_error`
+  - native ID assigned up front
+  - ask rules present and the temp file removed
+  - ask mode blocking, with decline leaving the file unchanged
+  - auto mode:
+    - needs an explicit auto-edit trust
+    - pins the in-folder path
+    - still asks for outside, traversal, `.claude`, `.mcp.json` and `.git` targets
+    - stops at once on revoke
+  - no mode change during a turn
+  - the `ran_without_host_approval` backstop, with no false flag when `tool_use_id` is absent
+  - the `.cmd` argument guard
+- `tools/tests/test_desktop_claude.py`: the Tk host's Claude routing, with no window created
+  - auto-accepted requests never block on the user
+  - a decline is honoured
+  - a toggle change reuses the native session
+  - consent is consumed by one new session
+  - a runtime error does not leak into the next turn
+  - a billing refusal surfaces as a reason code
 
-Still to prove on Jerome's PC, using `python tools\claude_runtime_probe.py`
-first without flags and then with `--turns`:
-- his plan label and model menu
-- `.exe` and `.cmd` spawning
-- `taskkill /T` behaviour
-- UTF-8 on the console
+Still to prove on Jerome's PC, which is Windows acceptance and needs his separate authorization:
+- a real turn, approval allow and deny, resume, interrupt
+- ask-rule precedence
+- `taskkill /T` on the `.cmd` shim
+- UTF-8 on a real turn
 
 ## Open questions
 
-1. **Credit confirmation.** Does Jerome want Fable at all in the desktop app? If yes, should confirmation be per session or per turn?
-2. **Default approvals.** Should the default policy be "ask for everything" (`default` mode) or `acceptEdits` inside a trusted workspace? The slice uses `default`.
-3. **Codex lane alignment.** Should the envelope kinds above become the shared schema? The Codex reply should confirm, or propose a mapping for its item and approval events.
-4. **UI technology (VLI-158).** This adapter is stdlib Python. A Tauri or Electron shell would either spawn it as a sidecar or port the same protocol to TypeScript. The protocol is the contract; the implementation can be ported.
+Settled: Fable stays in the menu, and each session needs its own confirmation (prompt 4). Approvals follow the VLI-159 toggle above. The envelope is the shared schema, and the Codex lane maps onto it. The UI is the stdlib Tk host in `tools/desktop.py`.
+
+Still open:
+1. **Live confirmation.** The ask-rule routing, auto-accept and `ran_without_host_approval` need one real approval turn on Jerome's PC. That is Windows acceptance, which needs his separate authorization.
+2. **Command friction.** Asking for every `Bash`/`PowerShell` command, including read-only ones like `git status`, is safe but noisy. A follow-up could offer "allow this exact command for this session" through the CLI's permission suggestions.

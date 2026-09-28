@@ -56,8 +56,60 @@ def text_delta() -> dict:
                                               "delta": {"type": "text_delta", "text": SECRET_TEXT}}}
 
 
+def edit_turn(text: str, lines, *, ask: bool) -> None:
+    """A desktop-session Edit: tool_use block, optional permission request, result."""
+    target = text.split("EDIT ")[1].split()[0]
+    emit({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Edit", "id": "tu-1", "input": {"file_path": target}}]}})
+    allowed = True
+    if ask:
+        request = {"subtype": "can_use_tool", "tool_name": "Edit",
+                   "input": {"file_path": target, "old_string": "a", "new_string": "b"}}
+        if os.environ.get("FAKE_TOOL_USE_ID") != "omit":
+            request["tool_use_id"] = "tu-1"
+        emit({"type": "control_request", "request_id": "perm-edit", "request": request})
+        message = json.loads(next(lines))
+        while message.get("type") != "control_response":  # e.g. an interrupt sent meanwhile
+            message = json.loads(next(lines))
+        answer = message["response"]["response"]
+        log({"approval_answer": answer})
+        allowed = answer["behavior"] == "allow"
+        if allowed:
+            Path(answer["updatedInput"]["file_path"]).write_text("b", encoding="utf-8")
+    emit({"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "tu-1", "is_error": not allowed}]}})
+    emit(result("done"))
+
+
 def handle_turn(text: str, lines) -> None:
-    if "Write tool once" in text:
+    if "ERROR THEN EDIT " in text:
+        emit({"type": "assistant", "message": {"content": []}, "error": "rate_limit"})
+        edit_turn(text.replace("ERROR THEN ", ""), lines, ask=True)
+    elif "UNASKED EDIT " in text:
+        edit_turn(text.replace("UNASKED ", ""), lines, ask=False)
+    elif "EDIT " in text:
+        edit_turn(text, lines, ask=True)
+    elif "BILLING ERROR" in text:
+        emit({"type": "assistant", "message": {"content": [{"type": "text", "text": SECRET_TEXT}]},
+              "error": "billing_error"})
+        emit(result(SECRET_TEXT, is_error=True))
+    elif "HANG" in text:
+        for line in lines:
+            if json.loads(line).get("request", {}).get("subtype") == "interrupt":
+                log({"interrupted": True})
+                return
+    elif "API KEY INIT" in text or "FABLE INIT" in text:
+        emit({"type": "system", "subtype": "init", "permissionMode": "default",
+              "model": "claude-fable-5" if "FABLE" in text else "claude-sonnet-5",
+              "apiKeySource": "ANTHROPIC_API_KEY" if "API KEY" in text else "none",
+              "session_id": "11111111-2222-3333-4444-555555555555"})
+        for line in lines:
+            if json.loads(line).get("request", {}).get("subtype") == "interrupt":
+                log({"interrupted": True})
+                emit(result("", is_error=True, subtype="error_during_execution",
+                            terminal_reason="aborted_streaming", modelUsage={}))
+                return
+    elif "Write tool once" in text:
         target = os.environ.get("FAKE_WRITE_TARGET") or text.split("create ")[1].split()[0]
         emit({"type": "control_request", "request_id": "perm-1", "request": {
             "subtype": "can_use_tool", "tool_name": "Write",
@@ -97,8 +149,12 @@ def handle_turn(text: str, lines) -> None:
 
 def main() -> int:
     args = sys.argv[1:]
-    log({"argv": args, "env_names": sorted(os.environ),
-         "env_values_with_planted": sorted(n for n, v in os.environ.items() if "PLANTED" in v)})
+    entry = {"argv": args, "env_names": sorted(os.environ),
+             "env_values_with_planted": sorted(n for n, v in os.environ.items() if "PLANTED" in v)}
+    if "--settings" in args:
+        entry["settings"] = json.loads(Path(args[args.index("--settings") + 1]).read_text(encoding="utf-8"))
+    log(entry)
+    desktop_session = "--permission-prompt-tool" in args
     if args == ["--version"]:
         print(f"2.1.283 (Claude Code) {m('build', gating=True)}")
         return 0
@@ -121,12 +177,21 @@ def main() -> int:
             subtype = message["request"].get("subtype")
             body = {}
             if subtype == "initialize":
+                plan = os.environ.get("FAKE_PLAN", "Claude Max")
+                if desktop_session:
+                    plan = os.environ.get("FAKE_SESSION_PLAN", plan)
                 body = {"account": {"email": "someone@example.com", "organization": SECRET_TEXT,
-                                    "subscriptionType": m(os.environ.get("FAKE_PLAN", "Claude Max"), gating=True),
+                                    "subscriptionType": m(plan, gating=True),
                                     "apiProvider": m("firstParty", gating=True)},
                         "models": [{"value": "haiku", "resolvedModel": "claude-haiku-4-5-20251001",
                                     "displayName": "Haiku", "description": SECRET_TEXT,
                                     "supportedEffortLevels": ["low", SECRET_TEXT]},
+                                   {"value": "default",
+                                    "resolvedModel": os.environ.get("FAKE_DEFAULT_MODEL", "claude-opus-4-8[1m]"),
+                                    "displayName": "Default (recommended)",
+                                    "supportedEffortLevels": ["low", "high", "max"]},
+                                   {"value": "claude-fable-5[1m]", "resolvedModel": "claude-fable-5",
+                                    "displayName": "Fable", "supportedEffortLevels": ["low", "max"]},
                                    {"value": SECRET_TEXT, "resolvedModel": "x", "displayName": SECRET_TEXT},
                                    {"value": m("opus"), "resolvedModel": f"claude-opus-{m('5-5')}",
                                     "displayName": m("Opus"), "supportedEffortLevels": [m("max")]}],

@@ -240,8 +240,14 @@ Otherwise, the user decides how to proceed.
 
 The default **ask every edit** mode is currently read-only proposal mode for
 Codex; its per-edit staged apply gate is still needed. Auto-accept is available
-for Codex only after explicitly trusting the exact folder. Claude auto-accept
-is blocked in this host until its adapter exposes that policy. This is a first
+for Codex only after explicitly trusting the exact folder. For Claude, every
+file edit and shell command reaches the host (ask rules passed with
+`--settings`). Ask mode shows each one as a blocking approval. In auto-accept
+mode, only file edits that resolve inside the trusted folder are accepted, with
+the path pinned. Agent configuration (`.git`, `.claude`, `.mcp.json`, ...) and
+all commands still ask. Fable, or a `default` that resolves to Fable, needs a
+confirmation for each new Claude session, and the adapter enforces this before
+spawning. This is a first
 slice, not Windows account acceptance or a packaged alpha. The CLI bridge
 remains available. The desktop does not establish which models
 Jerome's signed-in account can use. On his Windows machine, run the sanitized
