@@ -32,6 +32,20 @@ Branch, open a focused PR, run your tests, and merge safe green code autonomousl
 
 **Open gates:** this Linux workspace has no signed-in Windows Codex CLI. The 0.157.0 constant is a reviewed release/schema target exercised with a fake server, not a live Windows verification. Jerome's account-level model entitlement, two real turns/resume, Windows sandbox, approval decline/accept and the future desktop UI still require local checks. Catalog presence alone does not prove a model works; connector parity and native cross-provider history remain unproven.
 
+### Windows acceptance follow-up (2026-09-28)
+
+**Blocked before the first live check.** The available execution host reports `Linux`; `codex`, `pwsh`, `powershell.exe` and `wsl.exe` are absent from its PATH. It has no access to Jerome's signed-in Windows CLI. I did not run `--turn`, read auth files, or attempt an API-key route. This is an environment-access blocker, **not an observed entitlement denial or Windows sandbox failure**.
+
+| Acceptance check | Result | Evidence / actual behavior |
+|---|---|---|
+| Two real subscription turns | **Not run / blocked** | No installed signed-in Codex CLI in this host; no model usage or cost incurred. |
+| Native thread resume across process restart | **Not run / blocked** | Depends on the first real turn and Windows App Server process. |
+| Windows read-only sandbox and command/file decline/accept | **Not run / blocked** | No Windows host or sandbox to exercise; neither approval outcome was observed. |
+| Toggle: **Ask for every edit** | **Runtime configuration only; live behavior unverified** | Code sends `readOnly` with `onRequest`. It cannot apply edits. A host-owned staged diff and per-edit apply gate is still required for the product promise. |
+| Toggle: **Auto-accept in trusted folders** | **Runtime configuration only; live behavior unverified** | Code requires explicit exact-folder trust, then sends `workspaceWrite` scoped to that root, network disabled, `onRequest`. In-root edits are designed to proceed without individual prompts; Windows containment and actual approval behavior have not been observed. |
+
+The previously reported 102 fake-server/unit tests passed; they do not count as Windows acceptance. The next check requires a Windows session with Jerome's installed, ChatGPT-signed-in Codex CLI: run `py -3 -m tools.codex_probe` from the repo root and inspect the allowlisted report. Only when version/auth/catalog checks pass, explicitly run `py -3 -m tools.codex_probe --turn` for two disposable read-only turns and resume. The separate controlled sandbox/approval exercise in a disposable repo remains after that. **No entitlement or sandbox verdict can be given from this host.**
+
 ## Previous prompt - 2 (VLI-158/159, Codex runtime)
 Seeded 2026-09-27 SAST. Read current main. This is the Codex lane only.
 
