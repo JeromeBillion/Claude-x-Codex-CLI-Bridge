@@ -47,12 +47,16 @@ discover → preflight → trust gate → spawn chat process → turns … → c
    ```
    claude --print --input-format stream-json --output-format stream-json --verbose
           --include-partial-messages --permission-prompt-tool stdio --permission-mode default
-          --settings <temp ask-rules file> [--model <menu value>] [--effort <level>]
+          --settings <temp ask-rules file> --model <menu value, default pinned> [--effort <level>]
           (--session-id <uuid> | --resume <id>)
    ```
-   - **Model flag.** `--model` is omitted for `default`, so the CLI keeps its own default. Every new chat gets a `--session-id` up front, so its native ID is known before the first event.
+   - **Model flag.** `--model` is always passed. `default` is pinned to the menu's current `resolvedModel`, because without `--model` the CLI would read the model from a user or project settings file that the consent check cannot see.
+   - **Session IDs.** Every new chat gets a `--session-id` up front, so its native ID is known before the first event. Session IDs (`--session-id`, `--resume`, and IDs adopted from events) must be UUIDs.
+   - **Model check at start.** If the CLI's `system/init` reports a credit-billed model the session has no consent for, the turn is interrupted with `runtime_error` `billing` / `unconsented_credit_model`.
    - **Initialize.** The adapter sends `initialize` in the chat process, as the Agent SDK does. It then re-checks that reply's account (first party, subscription plan, no API key source) and refreshes the menu from it. A mismatch closes the process before any user turn.
-   - **`.cmd` shims.** Through an npm `.cmd` shim, any argument containing `%`, `"`, CR, LF or NUL is refused (`unsafe_cmd_argument`), because `cmd.exe` would rewrite it.
+   - **`.cmd` shims.** Through an npm `.cmd` shim, any argument containing `% " & | < > ^ ( ) !`, CR, LF or NUL is refused (`unsafe_cmd_argument`), because `cmd.exe` would rewrite or execute it.
+   - **Failed turns.** After the host fails a turn (`fail_turn()`), any request still in flight is declined, auto-accept included (`policy: declined_failed_turn`).
+   - **Host timeout.** A host timeout interrupts the CLI and marks the session `needs_restart`. The host then opens a new `--resume` session instead of reading the old turn's leftovers.
    - Environment, in two tiers:
      - Preflight (and the probe) run with `child_env()`, a strict allowlist of OS, profile, locale, proxy/CA and `CLAUDE_CONFIG_DIR` variables.
      - Chat sessions run with `session_env()`. It keeps the user's development environment but removes every `ANTHROPIC_*`, `CLAUDE_CODE_USE_*`, `CLAUDE_CODE_SKIP_*`, `CLAUDE_CODE_OAUTH_TOKEN*` and `CLAUDE_CODE_API_KEY*` variable, plus `AWS_BEARER_TOKEN_BEDROCK`, `VERTEX_REGION_*`, `CLOUD_ML_REGION` and `NODE_OPTIONS`. General AWS, Google Cloud and Azure credentials stay available to the user's own tools, but they cannot route Claude billing without the stripped provider switches.
@@ -144,7 +148,7 @@ shared with Codex). It can change only between turns.
   resolves strictly inside the trusted folder. The resolution follows existing
   symlinks and junctions. `..`, other absolute paths and agent-configuration
   paths are rejected: `.git`, `.claude`, `.codex`, `.mcp.json`,
-  `.agent-bridge` and `.vscode`. An edit there could grant the agent new hooks,
+  `.agent-bridge`, `.vscode`, `.github`, `.husky` and `.claude.json`, compared after stripping Windows's trailing dots and spaces. Any NTFS stream spelling (`name:stream`, `::$DATA`) and any 8.3 short name (`~1`) is also refused. An edit there could grant the agent new hooks,
   MCP servers or permissions. The allowed input is pinned to the validated
   absolute path. Commands always ask, because Claude Code has no command
   sandbox on Windows. Revoking folder trust takes effect at the next request.

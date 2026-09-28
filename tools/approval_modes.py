@@ -9,6 +9,7 @@ separate, stronger grant than trusting a folder enough to open a session in it.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path, PurePath
 import json
 from typing import Any
@@ -28,7 +29,10 @@ CLAUDE_ASK_RULES = (*sorted(CLAUDE_FILE_EDIT_TOOLS), "Bash", "PowerShell")
 # Paths that configure what the agent may run next. An edit there is never
 # auto-accepted, even in a trusted folder, because it could grant itself hooks,
 # MCP servers or permissions.
-PROTECTED_PARTS = frozenset({".git", ".claude", ".codex", ".mcp.json", ".agent-bridge", ".vscode"})
+PROTECTED_PARTS = frozenset({".git", ".claude", ".claude.json", ".codex", ".mcp.json", ".agent-bridge",
+                             ".vscode", ".github", ".husky"})
+# 8.3 short names (CLAUDE~1) can alias a protected name that does not exist yet.
+SHORT_NAME = re.compile(r"~\d")
 
 
 class TrustedFolderStore:
@@ -80,6 +84,11 @@ def confined_edit_target(raw: Any, root: Path) -> Path | None:
         return None
     if any(part == ".." for part in PurePath(raw.replace("\\", "/")).parts):
         return None
+    # NTFS streams (".mcp.json::$DATA", ".claude::$INDEX_ALLOCATION") create the
+    # protected file under another spelling. A colon is only legal in the drive.
+    drive_free = raw[2:] if len(raw) > 1 and raw[1] == ":" else raw
+    if ":" in drive_free:
+        return None
     candidate = Path(raw)
     if not candidate.is_absolute():
         candidate = root / candidate
@@ -93,8 +102,11 @@ def confined_edit_target(raw: Any, root: Path) -> Path | None:
     if resolved.exists() and not resolved.is_file():
         return None
     relative = resolved.relative_to(real_root).parts
-    if any(part.lower() in PROTECTED_PARTS for part in relative):
-        return None
+    for part in relative:
+        # Windows drops trailing dots and spaces: ".claude. " is ".claude".
+        name = part.rstrip(". ").lower()
+        if name in PROTECTED_PARTS or SHORT_NAME.search(part) or ":" in part:
+            return None
     return resolved
 
 

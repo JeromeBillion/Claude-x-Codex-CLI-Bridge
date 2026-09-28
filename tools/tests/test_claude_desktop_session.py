@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from approval_modes import (  # noqa: E402
     AUTO_ACCEPT_TRUSTED, TrustedFolderStore, claude_auto_accept, confined_edit_target,
 )
+import claude_runtime  # noqa: E402
 from claude_runtime import (  # noqa: E402
     ClaudeSession, CreditConsent, Preflight, RuntimeRefused, local_menu,
 )
@@ -53,7 +54,11 @@ class ApprovalModeUnitTests(unittest.TestCase):
             self.assertEqual(confined_edit_target("src/a.py", root), (root / "src" / "a.py").resolve())
             for bad in ("", None, 3, "a\x00b", "../x", "src/../../x", "src\\..\\..\\x", str(Path(outside) / "x"),
                         ".", "src", ".git/config", ".claude/settings.json", ".CLAUDE/settings.json",
-                        ".mcp.json", "sub/.codex/config.toml"):
+                        ".mcp.json", "sub/.codex/config.toml",
+                        # NTFS stream spellings, trailing dots/spaces and 8.3 names (review round 1).
+                        ".mcp.json::$DATA", ".claude::$INDEX_ALLOCATION/settings.local.json", "a.txt:hidden",
+                        ".claude./settings.json", ".mcp.json ", "CLAUDE~1/settings.json",
+                        ".github/workflows/x.yml", ".claude.json"):
                 with self.subTest(bad=bad):
                     self.assertIsNone(confined_edit_target(bad, root))
             link = root / "link"
@@ -137,10 +142,11 @@ class DesktopSessionTests(FakeCliFixture):
         self.assertEqual(str(caught.exception), "model_may_bill_usage_credits")
         self.assertNotIn("user_turn", self.log.read_text(encoding="utf-8"))
 
-    def test_default_model_lets_the_cli_choose_and_effort_is_validated(self) -> None:
+    def test_default_is_pinned_to_its_resolved_model_and_effort_is_validated(self) -> None:
+        # Leaving --model out would let a user or project settings file pick the model unseen.
         self.open(model="default", effort="max")
         argv = self.session_argv()[-1]
-        self.assertNotIn("--model", argv)
+        self.assertEqual(argv[argv.index("--model") + 1], "claude-opus-4-8[1m]")
         self.assertEqual(argv[argv.index("--effort") + 1], "max")
         with self.assertRaises(RuntimeRefused) as caught:
             self.open(model="haiku", effort="max")  # the fake menu offers haiku only "low"
@@ -270,14 +276,61 @@ class DesktopSessionTests(FakeCliFixture):
             seen = self.run_turn(self.open(), f"EDIT {self.root / 'a.txt'}", answer=True)
         self.assertFalse([e for e in seen if e.kind == "notice"])
 
-    def test_cmd_shim_refuses_arguments_cmd_would_rewrite(self) -> None:
+    def test_session_handles_must_be_uuids_and_cmd_metacharacters_are_refused(self) -> None:
         shim = Preflight([str(self.root / "claude.cmd")], (2, 1, 201), "older_untested", {}, {}, [], [])
         spawned = []
-        with self.assertRaises(RuntimeRefused) as caught:
-            ClaudeSession(shim, self.root, model="sonnet", session_id="a%PATH%b", trust=self.trust,
-                          spawn=lambda *a, **k: spawned.append(a))
-        self.assertEqual(str(caught.exception), "unsafe_cmd_argument")
+        for field, value in (("session_id", "a%PATH%b"), ("resume", "x&calc"),
+                             ("resume", "--dangerously-skip-permissions")):
+            with self.subTest(value), self.assertRaises(RuntimeRefused) as caught:
+                ClaudeSession(shim, self.root, model="sonnet", trust=self.trust,
+                              spawn=lambda *a, **k: spawned.append(a), **{field: value})
+            self.assertEqual(str(caught.exception), "invalid_session_id")
         self.assertEqual(spawned, [])
+        for text in ("a&b", "a|b", "a<b", "a>b", "a^b", "a(b", "a!b", 'a"b', "a%b"):
+            self.assertTrue(claude_runtime.CMD_UNSAFE.search(text), text)
+
+    # -- review round 1 regressions ------------------------------------------
+    def test_a_menu_row_flagged_only_by_its_display_name_needs_consent(self) -> None:
+        session = self.open()
+        session.menu = local_menu([{"value": "default", "displayName": "Default (Fable 5)"}])
+        with self.assertRaises(RuntimeRefused):
+            session._check_model("default")
+
+    def test_an_unconsented_credit_model_reported_by_the_cli_stops_the_turn(self) -> None:
+        seen = self.run_turn(self.open(), "FABLE INIT")
+        errors = [e.data for e in seen if e.kind == "runtime_error"]
+        self.assertEqual(errors, [{"category": "billing", "code": "unconsented_credit_model"}])
+        self.assertTrue(any(c.get("interrupted") for c in self.calls()))
+
+    def test_a_failed_turn_declines_later_requests_even_in_auto_mode(self) -> None:
+        (self.root / "a.txt").write_text("a", encoding="utf-8")
+        session = self.auto_session()
+        session.send("ERROR THEN EDIT a.txt")
+        seen = []
+        for envelope in session.events():
+            seen.append(envelope)
+            if envelope.kind == "runtime_error":
+                session.fail_turn()
+        request = next(e for e in seen if e.kind == "approval_request")
+        self.assertEqual(request.data["policy"], "declined_failed_turn")
+        self.assertEqual((self.root / "a.txt").read_text(encoding="utf-8"), "a")
+
+    def test_a_host_timeout_interrupts_and_forces_a_new_session(self) -> None:
+        session = self.open()
+        session.send("HANG")
+        with patch.object(claude_runtime, "EVENT_TIMEOUT_SECONDS", 1):
+            kinds = [e.data.get("subtype") for e in session.events()]
+        self.assertEqual(kinds, ["host_timeout"])
+        self.assertTrue(session.needs_restart)
+        with self.assertRaises(RuntimeRefused) as caught:
+            session.send("Reply OK")
+        self.assertEqual(str(caught.exception), "session_needs_restart")
+
+    def test_consent_names_the_model_the_user_confirmed(self) -> None:
+        consent = CreditConsent(confirmed_by_user=True, model="claude-fable-5[1m]")
+        with self.assertRaises(RuntimeRefused) as caught:
+            self.open(model="best", credit_consent=consent)
+        self.assertEqual(str(caught.exception), "credit_consent_for_another_model")
 
 
 if __name__ == "__main__":

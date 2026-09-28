@@ -80,7 +80,9 @@ CREDIT_BILLED = re.compile(r"fable|best", re.IGNORECASE)
 # Windows .cmd shim: aliases, IDs and the "[1m]" context suffix.
 MODEL_VALUE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\-]{0,95}(\[1m\])?")
 # Characters cmd.exe expands or re-quotes even inside a quoted argument.
-CMD_UNSAFE = re.compile(r'[%"\r\n\x00]')
+CMD_UNSAFE = re.compile(r'[%"\r\n\x00&|<>^()!]')
+# Native Claude session handles are UUIDs; nothing else goes on the command line or is adopted from events.
+SESSION_ID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 # Assistant-message error codes, grouped into the shared runtime_error categories.
 ASSISTANT_ERRORS = {
     "authentication_failed": "auth", "oauth_org_not_allowed": "auth", "billing_error": "billing",
@@ -120,9 +122,11 @@ class CreditConsent:
     included: every new session asks again.
     """
 
-    def __init__(self, *, confirmed_by_user: bool) -> None:
+    def __init__(self, *, confirmed_by_user: bool, model: str | None = None) -> None:
         if confirmed_by_user is not True:
             raise RuntimeRefused("credit_consent_not_confirmed")
+        # The model named in the confirmation the user saw; a session may not start on another one.
+        self.model = model
         self._owner: object | None = None
 
     def bind(self, owner: object) -> None:
@@ -342,9 +346,16 @@ class ClaudeSession:
         self._credit_consent: CreditConsent | None = None
         if credit_consent is not None:
             self.grant_credit_consent(credit_consent)
+        if credit_consent is not None and credit_consent.model not in (None, model):
+            raise RuntimeRefused("credit_consent_for_another_model")
+        for handle in (session_id, resume):
+            if handle is not None and not (isinstance(handle, str) and SESSION_ID.fullmatch(handle)):
+                raise RuntimeRefused("invalid_session_id")
         self._check_model(model)
         self._check_effort(model, effort)
         self.approval_mode = ASK_EVERY_EDIT
+        self._turn_failed = False
+        self._needs_restart = False
         self.auto_trust = auto_trust
         self._turn_active = False
         self.set_approval_mode(approval_mode, auto_trust)
@@ -360,8 +371,10 @@ class ClaudeSession:
             "--permission-prompt-tool", "stdio", "--permission-mode", "default",
             "--settings", str(self._settings),
         ]
-        if model != "default":  # the CLI picks its own default when --model is absent
-            command += ["--model", model]
+        # Never omit --model: without it the CLI reads the model from user or project
+        # settings, which the consent check cannot see. "default" is pinned to what
+        # the menu says it resolves to right now.
+        command += ["--model", self._spawn_model(model)]
         if effort:
             command += ["--effort", effort]
         command += ["--resume", resume] if resume else ["--session-id", self.session_ref]
@@ -427,15 +440,24 @@ class ClaudeSession:
     def _check_model(self, model: str) -> None:
         if not isinstance(model, str) or not MODEL_VALUE.fullmatch(model):
             raise RuntimeRefused("invalid_model_value")
-        resolved = [row.get("resolved_model") for row in self.menu if row.get("value") == model]
-        if is_credit_billed(model, *resolved) and self._credit_consent is None:
+        rows = [row for row in self.menu if row.get("value") == model or row.get("resolved_model") == model]
+        billed = is_credit_billed(model) or any(
+            row.get("credit_billed") or is_credit_billed(row.get("resolved_model"), row.get("display_name"))
+            for row in rows)
+        if billed and self._credit_consent is None:
             raise RuntimeRefused("model_may_bill_usage_credits")
+
+    def _spawn_model(self, model: str) -> str:
+        if model != "default":
+            return model
+        return next((row["resolved_model"] for row in self.menu
+                     if row.get("value") == "default" and row.get("resolved_model")), model)
 
     def _check_effort(self, model: str, effort: str | None) -> None:
         if effort is None:
             return
         offered = next((row["effort_levels"] for row in self.menu if row.get("value") == model), None)
-        if effort not in ("low", "medium", "high", "xhigh", "max") or                 (offered is not None and effort not in offered):
+        if effort not in ("low", "medium", "high", "xhigh", "max") or (offered is not None and effort not in offered):
             raise RuntimeRefused("effort_not_offered_for_model")
 
     def grant_credit_consent(self, consent: CreditConsent) -> None:
@@ -496,8 +518,23 @@ class ClaudeSession:
 
     # -- turns ---------------------------------------------------------------
     def send(self, text: str) -> None:
+        if self._needs_restart:
+            raise RuntimeRefused("session_needs_restart")
         self._send({"type": "user", "message": {"role": "user", "content": text}})
         self._turn_active = True
+        self._turn_failed = False
+
+    @property
+    def needs_restart(self) -> bool:
+        return self._needs_restart
+
+    def fail_turn(self) -> None:
+        """The host has failed this turn: interrupt it and decline anything it still asks for."""
+        self._turn_failed = True
+        try:
+            self.interrupt()
+        except RuntimeRefused:
+            pass
 
     def events(self) -> Iterator[Envelope]:
         """Yield envelopes until the current turn finishes or the process exits."""
@@ -507,6 +544,10 @@ class ClaudeSession:
             try:
                 raw = self._next_raw()
             except queue.Empty:
+                # The CLI may still be mid-turn: stop it, and never let a later turn
+                # read this turn's leftovers. The host must open a new (resumed) session.
+                self.fail_turn()
+                self._needs_restart = True
                 self._turn_active = False
                 yield Envelope(PROVIDER, self.session_ref, "turn_finished",
                                {"ok": False, "subtype": "host_timeout"})
@@ -516,7 +557,7 @@ class ClaudeSession:
                 yield Envelope(PROVIDER, self.session_ref, "process_exited",
                                {"exit_code": self.process.poll()})
                 return
-            if isinstance(raw.get("session_id"), str) and raw["session_id"]:
+            if isinstance(raw.get("session_id"), str) and SESSION_ID.fullmatch(raw["session_id"]):
                 self.session_ref = raw["session_id"]
             for envelope in normalize(raw, self.session_ref):
                 yield from self._route(envelope)
@@ -532,13 +573,17 @@ class ClaudeSession:
             self._tools[data["tool_use_id"]] = {"tool": data.get("tool"), "asked": False}
         elif kind == "session_started" and data.get("api_key_source_present"):
             # Never bill an API key: stop the turn the moment the CLI reports one.
-            try:
-                self.interrupt()
-            except RuntimeRefused:
-                pass
+            self.fail_turn()
             yield envelope
             yield Envelope(PROVIDER, self.session_ref, "runtime_error", {"category": "billing",
                                                                          "code": "api_key_source_present"})
+            return
+        elif kind == "session_started" and is_credit_billed(data.get("model")) and self._credit_consent is None:
+            # The CLI is running a credit-billed model nobody consented to (e.g. set by a settings file).
+            self.fail_turn()
+            yield envelope
+            yield Envelope(PROVIDER, self.session_ref, "runtime_error", {"category": "billing",
+                                                                         "code": "unconsented_credit_model"})
             return
         elif kind == "approval_request":
             yield from self._approval(envelope)
@@ -568,6 +613,12 @@ class ClaudeSession:
         data = dict(envelope.data)
         request_id = str(data["request_id"])
         self._mark_asked(data.get("tool"), data.get("tool_use_id"))
+        if self._turn_failed:
+            self._respond(request_id, {"behavior": "deny", "message": "The desktop host stopped this turn"})
+            yield Envelope(PROVIDER, self.session_ref, "approval_request", {**data, "policy": "declined_failed_turn"})
+            yield Envelope(PROVIDER, self.session_ref, "approval_decision",
+                           {"request_id": request_id, "decision": "decline", "by": "host_failed_turn"})
+            return
         pinned = None
         if self.approval_mode == AUTO_ACCEPT_TRUSTED and self.auto_trust is not None \
                 and self.auto_trust.is_trusted(self.workspace):
@@ -607,11 +658,8 @@ class ClaudeSession:
         if self._turn_active:
             raise RuntimeRefused("model_change_during_turn")
         self._check_model(model)
-        target = model
-        if model == "default":  # pin whatever the menu says default means right now
-            target = next((row["resolved_model"] for row in self.menu
-                           if row["value"] == "default" and row.get("resolved_model")), model)
-            self._check_model(target)
+        target = self._spawn_model(model)  # pin whatever the menu says default means right now
+        self._check_model(target)
         self._control("set_model", {"subtype": "set_model", "model": target})
         self.model = model
 

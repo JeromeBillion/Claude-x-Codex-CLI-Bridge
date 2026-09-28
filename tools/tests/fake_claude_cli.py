@@ -68,7 +68,10 @@ def edit_turn(text: str, lines, *, ask: bool) -> None:
         if os.environ.get("FAKE_TOOL_USE_ID") != "omit":
             request["tool_use_id"] = "tu-1"
         emit({"type": "control_request", "request_id": "perm-edit", "request": request})
-        answer = json.loads(next(lines))["response"]["response"]
+        message = json.loads(next(lines))
+        while message.get("type") != "control_response":  # e.g. an interrupt sent meanwhile
+            message = json.loads(next(lines))
+        answer = message["response"]["response"]
         log({"approval_answer": answer})
         allowed = answer["behavior"] == "allow"
         if allowed:
@@ -79,7 +82,10 @@ def edit_turn(text: str, lines, *, ask: bool) -> None:
 
 
 def handle_turn(text: str, lines) -> None:
-    if "UNASKED EDIT " in text:
+    if "ERROR THEN EDIT " in text:
+        emit({"type": "assistant", "message": {"content": []}, "error": "rate_limit"})
+        edit_turn(text.replace("ERROR THEN ", ""), lines, ask=True)
+    elif "UNASKED EDIT " in text:
         edit_turn(text.replace("UNASKED ", ""), lines, ask=False)
     elif "EDIT " in text:
         edit_turn(text, lines, ask=True)
@@ -87,9 +93,16 @@ def handle_turn(text: str, lines) -> None:
         emit({"type": "assistant", "message": {"content": [{"type": "text", "text": SECRET_TEXT}]},
               "error": "billing_error"})
         emit(result(SECRET_TEXT, is_error=True))
-    elif "API KEY INIT" in text:
-        emit({"type": "system", "subtype": "init", "model": "claude-sonnet-5", "permissionMode": "default",
-              "apiKeySource": "ANTHROPIC_API_KEY", "session_id": "11111111-2222-3333-4444-555555555555"})
+    elif "HANG" in text:
+        for line in lines:
+            if json.loads(line).get("request", {}).get("subtype") == "interrupt":
+                log({"interrupted": True})
+                return
+    elif "API KEY INIT" in text or "FABLE INIT" in text:
+        emit({"type": "system", "subtype": "init", "permissionMode": "default",
+              "model": "claude-fable-5" if "FABLE" in text else "claude-sonnet-5",
+              "apiKeySource": "ANTHROPIC_API_KEY" if "API KEY" in text else "none",
+              "session_id": "11111111-2222-3333-4444-555555555555"})
         for line in lines:
             if json.loads(line).get("request", {}).get("subtype") == "interrupt":
                 log({"interrupted": True})

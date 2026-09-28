@@ -228,7 +228,7 @@ class DesktopHost:
                                        "session, without Claude Code's own consent prompt.\n\nAllow it for this "
                                        "one Claude session? A new or resumed session asks again."):
                 return
-            self.claude_consent = CreditConsent(confirmed_by_user=True)
+            self.claude_consent = CreditConsent(confirmed_by_user=True, model=selected_claude)
         self.prompt.delete("1.0", "end")
         self._line(f"\nUSER ({mode}): {prompt}\n")
         model, effort, lead = self.codex_model.get(), self.codex_effort.get(), self.collaboration_lead.get()
@@ -236,6 +236,14 @@ class DesktopHost:
 
     def _run_turn(self, mode: str, approval: str, prompt: str, model: str,
                   effort: str, claude_model: str, lead: str) -> None:
+        try:
+            self._route_turn(mode, approval, prompt, model, effort, claude_model, lead)
+        finally:
+            # A yes to Fable is for the session started by THIS send; never let it carry over.
+            self.claude_consent = None
+
+    def _route_turn(self, mode: str, approval: str, prompt: str, model: str,
+                    effort: str, claude_model: str, lead: str) -> None:
         if mode == "gpt_only":
             turn = self._codex_turn(prompt, model, effort, approval, "answer")
             self.messages.put(("verdict", (turn, "Codex")))
@@ -289,7 +297,8 @@ class DesktopHost:
 
     def _new_claude_session(self, model: str) -> bool:
         return (self.claude_session is None or self.claude_model != model
-                or self.claude_session.process.poll() is not None)
+                or self.claude_session.process.poll() is not None
+                or getattr(self.claude_session, "needs_restart", False))
 
     def _claude_turn(self, text: str, model: str, role: str, approval: str = "ask_every_edit") -> TurnRecord:
         assert self.claude_preflight and self.workspace
@@ -322,7 +331,7 @@ class DesktopHost:
                 decision = self._ask("claude_approval", event)
                 session.answer_approval(str(event.data["request_id"]), allow=decision is True)
             if turn.finished and event.kind == "runtime_error":
-                session.interrupt()
+                session.fail_turn()  # interrupt, and decline any request still in flight
         self.history.append(turn)
         return turn
 
@@ -370,7 +379,14 @@ class DesktopHost:
         if self.codex and self.codex.active_turn_id:
             threading.Thread(target=self.codex.interrupt, daemon=True).start()
         if self.claude_session:
-            threading.Thread(target=self.claude_session.interrupt, daemon=True).start()
+            session = self.claude_session
+
+            def stop() -> None:
+                try:
+                    session.interrupt()
+                except RuntimeRefused:
+                    pass  # the process already ended
+            threading.Thread(target=stop, daemon=True).start()
 
     def _dialog(self, kind: str, data: Any) -> Any:
         if kind == "handoff":
@@ -494,6 +510,7 @@ class DesktopHost:
         if self.claude_session:
             self.claude_session.close()
         self.codex = self.codex_transport = self.claude_session = None
+        self.claude_consent = None
         self.claude_preflight = None
         self.claude_model = None
 

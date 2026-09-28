@@ -71,6 +71,14 @@ class DesktopClaudeTests(FakeCliFixture):
         with self.assertRaises(claude_runtime.RuntimeRefused):
             host._claude_turn("Reply OK", "claude-fable-5[1m]", "answer")
 
+    def test_an_unused_consent_never_carries_over_to_a_later_send(self) -> None:
+        host = self.host()
+        host.claude_consent = claude_runtime.CreditConsent(confirmed_by_user=True, model="claude-fable-5[1m]")
+        with patch.object(DesktopHost, "_route_turn", side_effect=RuntimeError("codex lead failed")):
+            with self.assertRaises(RuntimeError):
+                host._run_turn("collaboration", "ask_every_edit", "p", "m", "", "claude-fable-5[1m]", "codex")
+        self.assertIsNone(host.claude_consent)
+
     def test_a_default_that_resolves_to_fable_counts_as_credit_billed(self) -> None:
         host = self.host()
         host.claude_preflight = claude_runtime.Preflight(
