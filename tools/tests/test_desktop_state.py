@@ -17,6 +17,26 @@ class DesktopStateTests(unittest.TestCase):
         warning.assert_called_once()
         accept.assert_not_called()
 
+    def test_credit_confirmation_boundary_follows_claude_process_session(self):
+        host = DesktopHost.__new__(DesktopHost)
+        host.claude_session = None
+        host.claude_model = None
+        self.assertTrue(host._new_claude_session("best"))
+        class Process:
+            def __init__(self, exit_code):
+                self.exit_code = exit_code
+            def poll(self):
+                return self.exit_code
+        class Session:
+            def __init__(self, exit_code):
+                self.process = Process(exit_code)
+        host.claude_session = Session(None)
+        host.claude_model = "best"
+        self.assertFalse(host._new_claude_session("best"))
+        self.assertTrue(host._new_claude_session("fable"))
+        host.claude_session = Session(0)
+        self.assertTrue(host._new_claude_session("best"))
+
     def test_single_turn_keeps_provider_ownership_and_failure(self):
         turn = TurnRecord("codex", "catalog-model")
         turn.append(Envelope("codex", "native-thread", "text_delta", {"text": "draft"}))

@@ -15,7 +15,8 @@ local app state. The UI never substitutes a fixed model list.
 
 For Claude, the host calls `preflight()` for its dynamic model menu, then
 `ClaudeSession(...).send()`, `events()` and `answer_approval()`. The host blocks
-Fable or `best` until explicit per-app-session credit confirmation. It requires
+Fable or `best` until explicit confirmation for each newly spawned Claude
+session. A consent flag is consumed at session construction. It requires
 the existing `TrustStore` before headless Claude execution. Claude's adapter
 currently does not expose a user-selected approval policy, so the host refuses
 the auto-accept choice when Claude or collaboration is selected. The Claude

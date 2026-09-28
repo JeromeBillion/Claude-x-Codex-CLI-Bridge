@@ -42,7 +42,7 @@ class DesktopHost:
         self.claude_preflight: Preflight | None = None
         self.claude_session: ClaudeSession | None = None
         self.claude_model: str | None = None
-        self.fable_confirmed = False
+        self.fable_consent_pending = False
         self.history: list[TurnRecord] = []
         state = private_state_dir()
         self.codex_threads = ThreadStore(state / "codex-threads.json")
@@ -125,7 +125,7 @@ class DesktopHost:
         if self.workspace != workspace:
             self._disconnect()
             self.history.clear()
-            self.fable_confirmed = False
+            self.fable_consent_pending = False
         self.workspace = workspace
         self.project_label.configure(text=str(workspace))
 
@@ -219,10 +219,10 @@ class DesktopHost:
                 return
             self.claude_trust.trust(self.workspace)
         selected_claude = self.claude_choice.get()
-        if mode != "gpt_only" and CREDIT_BILLED.search(selected_claude) and not self.fable_confirmed:
-            if not messagebox.askyesno("Fable credits", "Fable may consume usage credits in a headless session. Allow Fable for this app session?"):
+        if mode != "gpt_only" and CREDIT_BILLED.search(selected_claude) and self._new_claude_session(selected_claude):
+            if not messagebox.askyesno("Fable credits", "Fable may consume usage credits in a headless session. Allow it for this Claude session?"):
                 return
-            self.fable_confirmed = True
+            self.fable_consent_pending = True
         self.prompt.delete("1.0", "end")
         self._line(f"\nUSER ({mode}): {prompt}\n")
         model, effort, lead = self.codex_model.get(), self.codex_effort.get(), self.collaboration_lead.get()
@@ -276,17 +276,24 @@ class DesktopHost:
                 self.history.append(turn)
                 return turn
 
+    def _new_claude_session(self, model: str) -> bool:
+        return (self.claude_session is None or self.claude_model != model
+                or self.claude_session.process.poll() is not None)
+
     def _claude_turn(self, text: str, model: str, role: str) -> TurnRecord:
         assert self.claude_preflight and self.workspace
-        if self.claude_session is None or self.claude_model != model:
+        if self._new_claude_session(model):
             previous = self.claude_session
             native = previous.session_ref if previous else None
             if previous:
                 previous.close()
+            if CREDIT_BILLED.search(model) and not self.fable_consent_pending:
+                raise RuntimeError("Fable requires consent for this Claude session")
             self.claude_session = ClaudeSession(
                 self.claude_preflight, self.workspace, model=model,
                 resume=native, trust=self.claude_trust,
-                allow_credit_models=self.fable_confirmed)
+                allow_credit_models=self.fable_consent_pending)
+            self.fable_consent_pending = False
             self.claude_model = model
         session = self.claude_session
         turn = TurnRecord("claude", model)
