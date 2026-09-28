@@ -100,6 +100,135 @@ Replied 2026-09-27 by Claude Code (cloud session). Both holes are closed.
 - **Tests:** `python -m unittest discover -s tools/tests -p "test_*.py"` gives **103 tests, OK**. The Claude suites run from `/tmp` also pass.
 - **The `--turns` gate is still yours to clear.** I am not asking Jerome to run it.
 
+### Inventory-only probe run, 2026-09-28 (cleared run; no `--turns`)
+Command, from the repo root on main at `39c2173`: `python3 tools/claude_runtime_probe.py` (this Linux container's equivalent of `python tools\claude_runtime_probe.py`). CLI `2.1.283 (Claude Code)`. **Exit 0, empty stderr, no user turn and no model call.** `--turns` was not run and is not being requested.
+
+**Full report, verbatim stdout:**
+```json
+{
+  "version": "2.1.283",
+  "auth": {
+    "logged_in": true,
+    "auth_method": "oauth_token",
+    "api_provider": "firstParty",
+    "api_key_source_present": false,
+    "exit_code": 0
+  },
+  "account": {
+    "plan": "Claude API",
+    "api_provider": "firstParty",
+    "api_key_source_present": false
+  },
+  "models": [
+    {
+      "value": "default",
+      "resolved_model": "claude-sonnet-5",
+      "display_name": "Default (recommended)",
+      "effort_levels": [
+        "high",
+        "low",
+        "max",
+        "medium",
+        "xhigh"
+      ]
+    },
+    {
+      "value": "sonnet",
+      "resolved_model": "claude-sonnet-5",
+      "display_name": "Sonnet",
+      "effort_levels": [
+        "high",
+        "low",
+        "max",
+        "medium",
+        "xhigh"
+      ]
+    },
+    {
+      "value": "claude-fable-5-1",
+      "resolved_model": "claude-fable-5-1",
+      "display_name": "Fable",
+      "effort_levels": [
+        "high",
+        "low",
+        "max",
+        "medium",
+        "xhigh"
+      ]
+    },
+    {
+      "value": "opus",
+      "resolved_model": "claude-opus-5-5",
+      "display_name": "Opus",
+      "effort_levels": [
+        "high",
+        "low",
+        "max",
+        "medium",
+        "xhigh"
+      ]
+    },
+    {
+      "value": "haiku",
+      "resolved_model": "claude-haiku-4-5-20251001",
+      "display_name": "Haiku",
+      "effort_levels": []
+    }
+  ],
+  "permission_mode": "default",
+  "commands": 51
+}
+```
+
+**What it shows:**
+- **Auth.** Logged in, `auth_method: oauth_token`, `firstParty`, no API key source. This container is signed in with a host-provided token, **not** a `claude.ai` subscription login. Had `--turns` been passed, the gate would have refused with `not_a_claude_ai_login` (and, failing that, `not_a_subscription_plan` for `plan: Claude API`). None of this is evidence about Jerome's plan or his model menu, which remain **unproven**.
+- **Model menu at the time of the run:** Default (→ `claude-sonnet-5`), Sonnet, Fable (`claude-fable-5-1`), Opus (`claude-opus-5-5`) and Haiku (`claude-haiku-4-5-20251001`, with no effort levels).
+- **Other fields:** permission mode `default`, 51 commands.
+
+**The menu changed on the server side between runs.** Minutes later, every run returned an 11-entry menu. It happened with and without the name-logging shim below, so the shim is not the cause. The default moved to Opus 5.5 and the display names became versioned ("Opus 5.5", "Fable 5.1", …). That later report, summarised:
+
+| value | resolved_model | display_name | effort levels |
+|---|---|---|---|
+| `default` | `claude-opus-5-5` | Default (recommended) | high, low, max, medium, xhigh |
+| `opus` | `claude-opus-5-5` | unlisted | high, low, max, medium, xhigh |
+| `claude-fable-5-1` | `claude-fable-5-1` | unlisted | high, low, max, medium, xhigh |
+| `sonnet` | `claude-sonnet-5` | unlisted | high, low, max, medium, xhigh |
+| `haiku` | `claude-haiku-4-5-20251001` | unlisted | — |
+| `unlisted-claude-opus` | `unlisted-claude-opus` | unlisted | high, low, max, medium, xhigh |
+| `claude-fable-5` | `claude-fable-5` | unlisted | high, low, max, medium, xhigh |
+| `claude-opus-4-8` | `claude-opus-4-8` | unlisted | high, low, max, medium, xhigh |
+| `claude-opus-4-7` | `claude-opus-4-7` | unlisted | high, low, max, medium, xhigh |
+| `claude-opus-4-6` | `claude-opus-4-6` | unlisted | high, low, max, medium |
+| `claude-sonnet-4-6` | `claude-sonnet-4-6` | unlisted | high, low, max, medium |
+
+### Remaining holes against the prompt-3 fixes
+- **No leak and no billing hole found.** The redaction behaved exactly as designed on real, unplanned data:
+  - Versioned display names that are not in the fixed set print as `unlisted`.
+  - `claude-opus-5`, which is not in the known-ID set, prints only as the bucket `unlisted-claude-opus`.
+  - Nothing from the raw values appears.
+- **One diagnostic gap, not a safety hole:**
+  - The finite sets are already stale against a live menu change: the versioned display names and `claude-opus-5`.
+  - A later Windows inventory run would therefore show those as `unlisted`.
+  - Proposed follow-up: add the public names "Opus 5.5", "Opus 5", "Fable 5.1", "Fable 5", "Sonnet 5", "Haiku 4.5", "Opus 4.8", "Opus 4.7", "Opus 4.6" and "Sonnet 4.6", plus the ID `claude-opus-5`, to the fixed sets.
+  - I have **not** changed code in this run; say if you want it.
+- **Menu drift.** The model menu is not a stable snapshot: it changed within minutes on the same CLI version. Probe results should always carry their timestamp, and the adapter must rebuild the menu from `initialize` on every preflight, as designed, never from a cached copy.
+
+### Cloud-credential scrubbing confirmed on this environment
+- **Parent environment:** 146 variables. 23 names look like credentials, including:
+  - a real AWS access-key pair (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`)
+  - `CLOUDSDK_AUTH_ACCESS_TOKEN`
+  - `GH_TOKEN` and `GITHUB_TOKEN`
+  - `ANTHROPIC_BASE_URL`
+  - host session and messaging tokens
+  - the code-injection hooks `NODE_OPTIONS`, `JAVA_TOOL_OPTIONS` and `BUN_OPTIONS`
+- **Method.** I re-ran the same inventory with `--claude-command` pointing at a shell shim. The shim records **only the variable names** each child receives (never values) and then `exec`s the real, unmodified `/opt/claude-code/bin/claude`.
+- **Result:**
+  - The probe spawned 3 children: `--version`, `auth status --json`, and the stream-json `initialize` session. Each received the same 15 names: `PATH`, `HOME`, `SHELL`, `TERM`, `LC_CTYPE`, `HTTPS_PROXY`, `https_proxy`, `NO_PROXY`, `no_proxy`, `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, the forced `ENABLE_CLAUDEAI_MCP_SERVERS` and `DISABLE_AUTOUPDATER`, and `PWD` (set by `/bin/sh` in the shim itself).
+  - **Credential-like names reaching any child: 0 of 23.** Parent variables dropped: 133 of 146.
+  - All 19 credential values of 6 or more characters were checked in memory (never printed) against both reports: **0 found**. Neither report contains `@`, `org`, `uuid`, `/root` or `/home`.
+- Two of the dropped names, `CLOUDSDK_AUTH_ACCESS_TOKEN` and `BUN_OPTIONS`, are not in the documented `STRIPPED_CATEGORIES` list. The allowlist removed them anyway, which is the point of switching from a denylist. `BUN_OPTIONS` matters because the native `claude` build is Bun-based.
+- **Scope of this confirmation:** it covers the probe and preflight path (`child_env`) only. Adapter chat sessions use `session_env` by design, which keeps the user's own AWS, GitHub and similar credentials for his tools and strips only Claude billing routes; they were not exercised here.
+
 ## Previous prompt - 2 (VLI-158/159, Claude runtime)
 Seeded 2026-09-27 SAST. Read current main and PR #1 before starting. This is the Claude lane only.
 
