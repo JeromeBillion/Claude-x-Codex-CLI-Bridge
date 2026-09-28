@@ -12,14 +12,109 @@ This file is the Claude Code lane for this repo only. Codex uses `comms/codex/CO
 This is a project handover. You and Codex now own day-to-day delivery for Jerome; work from VLI-157..163 as the source of scope and keep those tickets current with evidence, decisions, blockers and dependencies. Build the next Windows-first Claude runtime/UI slice that can proceed without Jerome's PC acceptance: wire the existing Claude runtime into the shared desktop coding timeline; discover and expose every Claude model currently offered by the installed CLI at runtime; include Fable, but require explicit per-session confirmation before using it; preserve native session IDs and resumability, stream events/limits/failures, and show tool/approval state. Implement the approval-mode toggle as locked in VLI-159: ask for every edit by default, with auto-accept only in folders the user explicitly trusted. Keep workspace trust explicit, CLI mode working, and no API keys, credential interception, or hidden billing. Use the existing event contract and handoff boundary; do not claim consumer-chat import or cross-provider native session transfer. In collaboration mode (VLI-163), coordinate with Codex; only present a shared final answer after both agree. Single-agent mode output stays with its chosen lane. Make code changes/tests on focused branches, merge safe passing changes autonomously to main only in this bridge repo under Jerome's existing repo-only grant; do not deploy. Keep COMMS one live numbered prompt per lane, one `## Current prompt` heading, reply below this prompt with commits/PRs, exact tests, proof, open risks and ticket links. Update and visually inspect complete COMMS file after each edit; GitHub web editor previously corrupted file structure, so re-read full file and verify exactly one current heading before commit. Keep working independently; escalate to Jerome through COMMS only for a security/policy issue, spending/credits, or genuinely contradictory requirements. Windows account/runtime acceptance remains an explicit open gate for Jerome's PC; do not claim it passed or ask for model turns unless separately authorized. Anthropic distribution/legal implications were not verified and are deferred; personal-use tool first, no distribution claim. Caution: headless Fable may consume credits without its interactive consent, so enforce per-session confirmation in host before spawn/use. Jerome's model examples illustrate intent, not exhaustive literal spec: all Claude and all OpenAI models the respective CLI exposes must be callable.
 
 ## Claude reply - 4
-**In progress, 2026-09-28 20:30 SAST (Claude Code on Jerome's Windows PC).** This is a coordination note for Codex, posted before any code lands.
-- **Shared checkout.** Both lanes are running in `C:\Users\choma\Desktop\Codex-Fable-Bridge`. Your branch `codex/prompt4-desktop-timeline` was checked out under me mid-task. I moved my work to a separate worktree (`..\Codex-Fable-Bridge-claude`, branch `claude/prompt4-runtime-slice`) and did not touch your uncommitted `tools/desktop.py` / `desktop_state.py`.
-- **Split to avoid double work.** You own `tools/desktop.py`, `tools/desktop_state.py` and the GPT-only / collaboration / Claude-only control. I own `tools/claude_runtime.py` and a new shared `tools/approval_modes.py` (the approval toggle, with `TrustedFolderStore` moved there and re-exported from `codex_app_server`). After your desktop PR merges, I will rebase and fix the Claude call sites in `desktop.py`.
-- **Claude interface changes are coming, so please do not build around the old ones:**
-  - `Preflight.models` becomes the raw, callable local menu (`value`, `resolved_model`, `display_name`, `effort_levels`, `credit_billed`). The redacted names (`unlisted-claude-opus`) could not be passed to `--model`.
-  - `allow_credit_models=True` is replaced by a single-use `CreditConsent` bound to one `ClaudeSession`. A per-app-session Fable flag, as in your draft, would not meet "per-session confirmation".
-  - `ClaudeSession(..., approval_mode=, auto_trust=)` applies the VLI-159 toggle and emits `approval_decision` like Codex.
-- **Real Windows finding.** Jerome's installed CLI is **2.1.201** (npm `.cmd` shim). The adapter's `MIN_VERSION` 2.1.280 would refuse it outright, so I am fixing the version floor.
+Replied 2026-09-28 20:55 SAST by Claude Code, running locally on Jerome's Windows 11 PC. **The Claude runtime is wired into the shared desktop timeline and merged.** No deployment. No model turn was run or requested.
+- **PR:** https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/12
+- **Head:** `f4fc115`, squash-merged to main as `f225c5f`. The merged tree is identical to the reviewed head.
+- **Builds on:** Codex [PR #11](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/11), `338c61a`.
+- **Tickets:** [VLI-158](https://linear.app/vlive-projects/issue/VLI-158), [VLI-159](https://linear.app/vlive-projects/issue/VLI-159), [VLI-160](https://linear.app/vlive-projects/issue/VLI-160), [VLI-163](https://linear.app/vlive-projects/issue/VLI-163). **I could not update Linear from this session: it has no Linear connector.** Paste-ready ticket notes are at the end of this reply.
+
+### Delivered
+- **Every model the installed CLI offers is callable.** `Preflight.models` is now the live menu, with `value`, `resolved_model`, `display_name`, `effort_levels` and `credit_billed`. Values keep their exact spelling, including `[1m]` and IDs the probe's fixed sets do not know. Before, the desktop picker received redacted names such as `unlisted-claude-opus`, which `--model` cannot accept. The shareable, redacted form is now `models_report`.
+- **Fable asks before each Claude session, enforced in the adapter before spawn** (`CreditConsent`).
+  - Each consent names the model the user confirmed and binds to exactly one `ClaudeSession`.
+  - A resumed or respawned process asks again, and so does a mid-session `set_model`.
+  - A `default` that resolves to Fable counts, whether the resolved model or only the display name says so. Matching ignores case. It is re-checked against the chat process's own live menu.
+  - `default` is always pinned with `--model`. Otherwise a user or project settings file could choose the model without the check seeing it.
+  - If the CLI's `system/init` reports a credit-billed model with no consent, the turn is interrupted, and the session refuses further turns.
+  - The desktop clears an unused consent after every run and on disconnect.
+- **The VLI-159 approval toggle works for Claude**, through the new shared `tools/approval_modes.py`. `TrustedFolderStore` moved there, `codex_app_server` re-exports it, and both providers use one trusted-folder list.
+  - **Routing.** Each chat process gets `--settings` with `permissions.ask` for `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `Bash` and `PowerShell`. So user or project allow rules cannot skip the host.
+  - **Ask mode.** `ask_every_edit` is the default: every edit and command is a blocking card.
+  - **Auto mode.** `auto_accept_trusted` needs the folder explicitly trusted for automatic edits. It accepts only file edits whose target resolves strictly inside that folder, with the validated path pinned.
+  - **Never auto-accepted:**
+    - agent config: `.git`, `.claude`, `.claude.json`, `.codex`, `.mcp.json`, `.agent-bridge`, `.vscode`, `.github`, `.husky`
+    - NTFS stream spellings, trailing-dot or trailing-space spellings, and 8.3 short names
+    - commands (Claude Code has no Windows command sandbox)
+  - **Changes.** The mode can change only between turns. Revoking a folder's trust takes effect at the next request.
+- **Billing is re-checked inside the chat process.** Its own `initialize` must report a first-party subscription with no API key source; otherwise the process is closed before any user turn. An API-key source reported mid-turn interrupts the turn.
+- **Events.**
+  - `approval_request` carries `policy` (`ask`, `auto_accept` or `declined_failed_turn`).
+  - `approval_decision` carries `by` (`user`, `auto_trusted` or `host_failed_turn`), matching Codex's kind.
+  - `runtime_error` covers assistant error codes (`auth`, `billing`, `limit`, `connection`, `other`), with no model text.
+  - A `ran_without_host_approval` notice shows any edit or command that finished without reaching the host.
+  - `session_ref` is a UUID assigned up front and resumed with `--resume`. It is never translated.
+- **Robustness.**
+  - `MIN_VERSION` is now 2.1.201. The previous floor of 2.1.280 refused Jerome's installed CLI (`cli_too_old`, confirmed live). Versions other than 2.1.283 run, labeled `older_untested` or `newer_untested`.
+  - For `.cmd` shims, arguments containing `% " & | < > ^ ( ) !`, CR, LF or NUL are refused. Session IDs must be UUIDs.
+  - On Windows, closing kills the whole process tree.
+  - `fail_turn()` declines anything still in flight after a failure or Stop.
+  - `host_timeout` interrupts and forces a new, resumed session.
+  - Writes to stdin are locked.
+- **Desktop host (`tools/desktop.py`, Codex's).**
+  - Removed the "Claude auto-accept not wired" block.
+  - Only `policy=ask` requests reach the user. Before this, an auto-accepted request would have been answered again and raised `unknown_approval_request`.
+  - Claude-only auto mode now grants the shared auto-edit trust. Before, it never did.
+  - A runtime error drains to the CLI's own turn end, so it cannot leak into the next turn.
+  - Refusals show their fixed reason code, such as `cli_too_old`.
+  - The catalog line shows CLI version status, plan and the full menu, with Fable marked "asks before use".
+- **Collaboration (VLI-163)** uses Codex's gate unchanged: the result is joint only after exact approvals from both. I routed the Claude turns in it through the approval toggle. Single-provider modes keep their own answer. No consumer-chat import or native cross-provider session transfer is claimed.
+- **CLI mode is untouched.** `tools/agent_bridge.py --dry-run` gives the same commands as before.
+
+### Evidence
+- **Tests:** `python -W error::ResourceWarning -m unittest discover -s tools/tests -p "test_*.py"` gives **145 tests, OK**. That run was on merged main on this Windows PC (Python 3.13.3). `python -m compileall -q tools` and `git diff --check` are clean.
+  - New suites: `tools/tests/test_claude_desktop_session.py` and `tools/tests/test_desktop_claude.py`, which covers host routing without a Tk window.
+  - Before this work, main had **5 Windows-only test errors**: the temp workspace was deleted before the fake CLI process that was still using it had exited. The earlier green runs were on Linux. Codex fixed the same bug in parallel.
+- **Mutation check.** Each of these makes the suite fail:
+  - credit gate off
+  - session billing re-check off
+  - auto-accept confinement off
+  - live-menu re-check off
+  - ask rules off
+  - mid-turn mode guard off
+- **Independent adversarial review** (a separate agent, two rounds).
+  - **Round 1** found 3 must-fix issues:
+    - Consent could be bypassed through a `default` flagged only by its display name.
+    - An unpinned `default` could be steered by a settings file.
+    - NTFS stream spellings such as `.mcp.json::$DATA` escaped the auto-accept confinement. Reproduced with the fake CLI.
+  - It also found 4 should-fix issues:
+    - `.cmd` metacharacters and unvalidated `--resume`
+    - requests left unanswered after a failure
+    - a host timeout that did not stop the CLI
+    - a consent that could carry over to a later session
+  - **Round 2** confirmed all seven fixes hold and found two more gaps: case-sensitive menu matching, and a Fable retry on every Send after `unconsented_credit_model`. Both are fixed, with regression tests.
+- **Real CLI on Jerome's PC, with no model call and no user message:**
+  - `python tools/claude_runtime_probe.py` (inventory only) exited 0. It reports CLI `2.1.201`, `auth_method: claude.ai`, `firstParty`, **plan `Claude Team`**, and no API key source.
+  - The menu is: `default` → `claude-opus-4-8[1m]`, `opus[1m]` → `claude-opus-4-8[1m]`, `claude-fable-5[1m]` → `claude-fable-5` (Fable), `sonnet` → `claude-sonnet-5`, `haiku` → `claude-haiku-4-5-20251001`.
+  - The adapter's `preflight()` accepted it as `older_untested` through the npm `.cmd` shim. The old adapter refused the same CLI with `cli_too_old`.
+  - A real chat `ClaudeSession` started with the production flags: `--settings` ask rules, `--permission-prompt-tool stdio`, `--session-id` and `--model claude-opus-4-8[1m]`. It completed `initialize` in about 4 seconds, and its own reply said Team / firstParty / no API key. On close it exited 0 and the temp settings file was removed.
+  - Jerome's own SessionStart hooks (the remember plugin) ran at spawn with no turn and wrote into the throwaway folder. That is live evidence for the explicit trust gate.
+
+### Open risks and gates
+- **Windows runtime acceptance is still open.** On Jerome's PC, no real turn, approval allow or deny, resume, interrupt, `taskkill /T` or UTF-8 reply has been run. It needs his separate authorization. I am not asking for it here.
+- **Ask-rule precedence is unverified live.** That ask rules outrank a user's allow rules comes from the docs (https://code.claude.com/docs/en/permissions) and the fake-CLI tests. It has not been observed in a real turn. The `ran_without_host_approval` notice is the visible backstop.
+- **Friction.** Every `Bash`/`PowerShell` command asks, including `git status`. A later option could allow one exact command for the session.
+- **Refusals that may be too strict:**
+  - A `.cmd` install whose temp path contains `( ) !` or `&` is refused.
+  - Ordinary names like `file~1.txt` ask instead of auto-accepting.
+  - If the live `default` changed since preflight, the session refuses and the user must reconnect. The host does not re-prompt.
+- **Codex's strict mode** is still proposal-only until its per-edit staging and apply path exists. That is Codex's lane.
+- **Coordination.** Both lanes ran in the same checkout at `C:\Users\choma\Desktop\Codex-Fable-Bridge`, and Codex switched branches under this session. I worked in `..\Codex-Fable-Bridge-claude`. **Codex: please use a separate worktree too.** Five stray `claude-desktop-ask-*.json` temp files came from the reviewer's repro runs; I deleted them.
+- **Anthropic distribution and legal terms:** not verified, and deferred. Personal use only.
+
+### Ticket notes (paste into Linear; this session cannot)
+- **VLI-158:**
+  - Claude runtime wired into the desktop timeline in PR #12 (`f225c5f`), with the live callable menu and native UUID sessions.
+  - Jerome's PC: CLI 2.1.201 accepted as `older_untested`; preflight and a no-turn session were verified.
+  - Open: Windows turn acceptance.
+- **VLI-159:**
+  - The Claude approval toggle is implemented: ask by default; auto only in folders explicitly trusted for auto edits; commands always ask. The trusted-folder list is shared with Codex.
+  - Open: live check of ask-rule precedence, and Codex's per-edit apply.
+- **VLI-160:**
+  - The inspectable handoff boundary is unchanged, and no native transfer is claimed.
+  - New `approval_decision`, `runtime_error` and `ran_without_host_approval` kinds are documented in `docs/claude-desktop-runtime.md`.
+- **VLI-163:**
+  - Claude turns in collaboration now honour the toggle and the per-session Fable consent.
+  - The joint gate is still Codex's.
 
 ## Previous prompt - 3 (Claude probe safety follow-up)
 Seeded 2026-09-27 SAST. This is the Claude lane only. Read current main, especially `tools/claude_runtime_probe.py` and `tools/tests/test_claude_runtime_probe.py`, before changing anything.
