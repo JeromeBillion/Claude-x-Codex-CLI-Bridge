@@ -7,6 +7,7 @@ The user reviews the handoff text before it is sent across that boundary.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from typing import Literal
 
 from tools.runtime_events import Envelope
@@ -14,6 +15,42 @@ from tools.runtime_events import Envelope
 Mode = Literal["gpt_only", "collaboration", "claude_only"]
 MODES: tuple[Mode, ...] = ("gpt_only", "collaboration", "claude_only")
 BLOCKING_KINDS = frozenset({"approval_request", "mcp_elicitation", "connector_approval_request"})
+
+
+@dataclass(frozen=True)
+class RolePlan:
+    lead: str
+    final: str
+    reason: str
+
+
+def parse_role_plan(text: str) -> RolePlan:
+    """A role nomination has no authority unless its entire output is valid JSON."""
+    if not isinstance(text, str) or len(text) > 2048:
+        raise ValueError("Role nomination is too long")
+    candidate = text.strip()
+    if candidate.startswith("```json\n") and candidate.endswith("\n```"):
+        candidate = candidate[8:-4].strip()
+    try:
+        def unique_pairs(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("Role nomination has a duplicate field")
+                value[key] = item
+            return value
+        raw = json.loads(candidate, object_pairs_hook=unique_pairs)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError("Role nomination is not exact JSON") from exc
+    if not isinstance(raw, dict) or set(raw) != {"lead", "final", "reason"}:
+        raise ValueError("Role nomination has an unexpected shape")
+    if not isinstance(raw["lead"], str) or not isinstance(raw["final"], str) \
+            or raw["lead"] not in {"codex", "claude"} or raw["final"] not in {"codex", "claude"}:
+        raise ValueError("Role nomination names an unknown provider")
+    reason = raw["reason"]
+    if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 500:
+        raise ValueError("Role nomination needs a short reason")
+    return RolePlan(raw["lead"], raw["final"], reason.strip())
 
 
 @dataclass
@@ -49,6 +86,7 @@ class Collaboration:
 
     candidate: str = ""
     source_provider: str = ""
+    final_provider: str = ""
     votes: dict[str, tuple[bool, str]] = field(default_factory=dict)
     state: str = "draft"  # draft | awaiting_review | approved | needs_user_decision
 

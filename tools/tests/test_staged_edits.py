@@ -191,6 +191,7 @@ class StagedEditTests(unittest.TestCase):
         target.write_text("before", encoding="utf-8")
         candidate = proposal({"path": "app.py", "old_text": "before", "new_text": "after"})
         digest = hashlib.sha256(candidate.encode("utf-8")).hexdigest()
+        plan = json.dumps({"lead": "codex", "final": "claude", "reason": "Claude checks the final edit"})
         host = DesktopHost.__new__(DesktopHost)
         host.workspace = self.root
         host.messages = queue.Queue()
@@ -203,12 +204,13 @@ class StagedEditTests(unittest.TestCase):
 
         def codex_turn(_text, _model, _effort, _approval, role):
             turns.append(("codex", role))
-            return finished("codex", candidate if role.startswith("draft") else f"APPROVE {digest}")
+            value = plan if role.startswith("planning") else candidate if role.startswith("draft") else f"APPROVE {digest}"
+            return finished("codex", value)
 
         def claude_turn(_text, _model, role, _approval):
             turns.append(("claude", role))
             self.assertEqual(target.read_text(encoding="utf-8"), "before")
-            return finished("claude", f"APPROVE {digest}")
+            return finished("claude", plan if role.startswith("planning") else f"APPROVE {digest}")
 
         def ask(kind, value):
             if kind == "handoff":
@@ -216,13 +218,13 @@ class StagedEditTests(unittest.TestCase):
             self.assertEqual(kind, "edit_review")
             self.assertEqual(target.read_text(encoding="utf-8"), "before")
             self.assertIn("-before", value.diff)
-            self.assertEqual(turns[-1], ("codex", "final review, unapproved"))
+            self.assertEqual(turns[-1], ("claude", "final review, unapproved"))
             return True
 
         host._codex_turn = codex_turn
         host._claude_turn = claude_turn
         host._ask = ask
-        host._collaborate("change app.py", "codex-model", "high", "claude-model", "ask_every_edit", "codex")
+        host._collaborate("change app.py", "codex-model", "high", "claude-model", "ask_every_edit")
         self.assertEqual(target.read_text(encoding="utf-8"), "after")
         joint = [item[1] for item in host.messages.queue if item[0] == "joint"][-1]
         self.assertEqual(joint.joint_answer, candidate)
@@ -231,6 +233,7 @@ class StagedEditTests(unittest.TestCase):
         target = self.root / "app.py"
         target.write_text("before", encoding="utf-8")
         candidate = proposal({"path": "app.py", "old_text": "before", "new_text": "after"})
+        plan = json.dumps({"lead": "codex", "final": "codex", "reason": "Codex owns this edit"})
         host = DesktopHost.__new__(DesktopHost)
         host.workspace = self.root
         host.messages = queue.Queue()
@@ -240,10 +243,12 @@ class StagedEditTests(unittest.TestCase):
             turn.append(Envelope(provider, "native", "turn_finished", {"ok": True}))
             return turn
 
-        host._codex_turn = lambda _text, _model, _effort, _approval, _role: finished("codex", candidate)
-        host._claude_turn = lambda _text, _model, _role, _approval: finished("claude", "DISAGREE")
+        host._codex_turn = lambda _text, _model, _effort, _approval, role: finished(
+            "codex", plan if role.startswith("planning") else candidate)
+        host._claude_turn = lambda _text, _model, role, _approval: finished(
+            "claude", plan if role.startswith("planning") else "DISAGREE")
         host._ask = lambda kind, value: value if kind == "handoff" else self.fail("Edit dialog opened before agreement")
-        host._collaborate("change app.py", "codex-model", "high", "claude-model", "ask_every_edit", "codex")
+        host._collaborate("change app.py", "codex-model", "high", "claude-model", "ask_every_edit")
         self.assertEqual(target.read_text(encoding="utf-8"), "before")
         joint = [item[1] for item in host.messages.queue if item[0] == "joint"][-1]
         self.assertIsNone(joint.joint_answer)
