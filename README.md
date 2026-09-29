@@ -221,6 +221,10 @@ python -m unittest discover -s tools/tests -p "test_*.py" -v
 
 ## Codex App Server desktop slice
 
+Delivery order and the Windows readiness gate are in [the roadmap](docs/ROADMAP.md).
+The bounded, local commit review loop for the Claude and Codex worktrees is
+documented in [the agent relay guide](docs/agent-relay.md).
+
 The separate [runtime design](docs/codex-app-server-runtime.md) and
 `tools/codex_app_server.py` feed a first personal desktop timeline:
 

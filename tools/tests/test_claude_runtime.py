@@ -159,6 +159,13 @@ class FakeCliFixture(unittest.TestCase):
 
 
 class SessionTests(FakeCliFixture):
+    def test_review_session_disables_cli_tools(self) -> None:
+        self.open(disable_tools=True)
+        entries = [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+        session = next(entry for entry in reversed(entries) if "--permission-prompt-tool" in entry["argv"])
+        pos = session["argv"].index("--tools")
+        self.assertEqual(session["argv"][pos + 1], "")
+
     def test_preflight_reports_plan_and_models_without_a_model_call(self) -> None:
         self.assertEqual(self.pre.account["plan"], "Claude Max")
         self.assertEqual(self.pre.version_status, "tested")

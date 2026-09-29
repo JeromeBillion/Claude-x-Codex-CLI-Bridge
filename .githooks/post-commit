@@ -1,0 +1,3 @@
+#!/bin/sh
+# Queue only; never run a provider or block the commit.
+python -m tools.agent_relay enqueue-commit >/dev/null 2>&1 || true
