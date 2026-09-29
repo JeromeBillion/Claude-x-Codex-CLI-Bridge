@@ -213,6 +213,12 @@ Guardrails the probe enforces:
 
 The resume probe leaves one short session in the CLI's own local history.
 
+## Working on this repo (agents and humans)
+
+Branch work happens only inside the repo, in `.worktrees/`, and after every
+merge the merging agent runs `python -m tools.repo_hygiene clean --apply`.
+See [AGENTS.md](AGENTS.md) for the full rules.
+
 ## Tests
 
 ```powershell
