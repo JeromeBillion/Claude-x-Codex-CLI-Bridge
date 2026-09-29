@@ -28,6 +28,7 @@ class DesktopClaudeTests(FakeCliFixture):
         host.claude_session = None
         host.claude_model = None
         host.claude_consent = None
+        host.conversation = None  # VLI-160 recording is covered in test_desktop_conversation
         host.claude_trust = self.trust
         host.codex_trust = TrustedFolderStore(self.root / "auto.json")
         host.asked = []
