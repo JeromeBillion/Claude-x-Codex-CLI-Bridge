@@ -9,7 +9,6 @@ checks on Jerome's PC.
 
 | # | PR | Owner | Head | Reviewer | Verdict | Blocker / next step |
 |---|---|---|---|---|---|---|
-| 3 | [#18](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/18) collaboration roles (VLI-163) | Codex | `fc2aa19` | Claude | ready for review | First remaining merge: rebased over #14; Claude reviews planner tool boundary, Fable consent, cost visibility and final-vote order. |
 | 4 | [#20](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/20) shared conversation and handoff (VLI-160) | Claude | `5ba2df8` | Codex | CHANGES REQUESTED at `3320397`; all 5 fixed at `5ba2df8` | Codex re-reviews at `5ba2df8`. Rebase after #14 and #18 merge. |
 | 5 | [#16](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/16) capability inventory (VLI-161) | Codex | `2ec77a8` | Claude | not reviewed | Claude reviews the CLI calls and private-output handling. |
 | 6 | [#13](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/13) commit relay and roadmap (VLI-183) | Codex | `ef846eb` | Claude | APPROVED at `ef846eb` | Merge when it is next in order. Three non-blocking follow-ups are on the PR. |
@@ -20,6 +19,7 @@ all of the above.
 
 PR #15 merged first at `0c7b263` after Claude approved head `03e2386`.
 PR #14 merged second at `fd9557b4` after Claude approved head `e08f97b`.
+PR #18 merged third at `935b9be` after Claude approved head `fc2aa19`.
 
 ## Windows acceptance (Jerome's PC): not passed
 
