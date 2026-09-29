@@ -221,6 +221,9 @@ python -m unittest discover -s tools/tests -p "test_*.py" -v
 
 ## Codex App Server desktop slice
 
+The [Windows alpha launch and acceptance guide](docs/windows-alpha.md) covers
+the source ZIP, `launch-desktop.cmd`, and the tests needed before a ready claim.
+
 The separate [runtime design](docs/codex-app-server-runtime.md) and
 `tools/codex_app_server.py` feed a first personal desktop timeline:
 
