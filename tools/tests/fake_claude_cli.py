@@ -150,6 +150,7 @@ def handle_turn(text: str, lines) -> None:
 def main() -> int:
     args = sys.argv[1:]
     entry = {"argv": args, "env_names": sorted(os.environ),
+             "claudeai_mcp_disabled": os.environ.get("ENABLE_CLAUDEAI_MCP_SERVERS"),
              "env_values_with_planted": sorted(n for n, v in os.environ.items() if "PLANTED" in v)}
     if "--settings" in args:
         entry["settings"] = json.loads(Path(args[args.index("--settings") + 1]).read_text(encoding="utf-8"))

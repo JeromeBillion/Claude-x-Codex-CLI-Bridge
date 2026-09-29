@@ -28,12 +28,16 @@ python -m tools.agent_relay enqueue-commit
 After both lanes review the hook, install it once for this repository:
 
 ```powershell
-git config core.hooksPath .githooks
+python -m tools.agent_relay install-hook
 ```
 
-The tracked `.githooks/post-commit` invokes `enqueue-commit` automatically.
-If the repository already has a custom `core.hooksPath`, incorporate this hook
-there instead of replacing that configuration. The hook only routes owned
+Installation copies the tracked hook and standalone queue script into the
+repository's common `.git/hooks` directory, then sets an absolute
+`core.hooksPath`. That one hook runs even when a linked worktree's branch
+predates the relay files. An existing custom hook is preserved and installation
+refuses to replace it; incorporate the relay hook there manually. Failures are
+recorded in local `agent-relay/hook-errors.log`, and `status` reports whether
+the hook is effective in the current worktree. The hook only routes owned
 branches (`codex/` and `claude/`) and never launches a CLI.
 
 ## Review queue
@@ -45,11 +49,10 @@ python -m tools.agent_relay status --agent claude
 python -m tools.agent_relay status --agent codex
 ```
 
-To make one tool-disabled review turn, explicitly opt in:
+To make one isolated Claude review turn, explicitly opt in:
 
 ```powershell
 python -m tools.agent_relay watch --agent claude --max-turns 1 --allow-model-turns
-python -m tools.agent_relay watch --agent codex --max-turns 1 --allow-model-turns
 ```
 
 Run each watcher from its own worktree. It waits for at most one queued
@@ -59,14 +62,19 @@ pending count. No Fable or `best` model is chosen for unattended review.
 Claude's workspace must already be explicitly trusted for a headless session
 in the desktop app; the relay does not grant trust. A review request whose
 provider fails is marked failed for inspection, not silently retried.
-Claude's own SessionStart hooks may still run when its process starts, even
-with CLI tools disabled, which is why workspace trust is required.
+Claude reviews disable built-in tools, configured MCP servers, claude.ai MCP
+connectors, and user/project setting sources. Workspace trust is still required
+before opening the session. Codex unattended relay reviews currently fail
+closed: a read-only App Server sandbox does not establish a pre-call veto for
+MCP and app tools. Codex can review Claude's PR manually under user control
+while that isolation remains unverified.
 
 Read a saved review using the full SHA:
 
 ```powershell
 python -m tools.agent_relay show-report <full-sha> --agent claude
 python -m tools.agent_relay retry <full-sha> --agent claude
+python -m tools.agent_relay retry <full-sha> --agent claude --from-done
 ```
 
 If a watcher process dies while holding a claim, stop all watchers for that

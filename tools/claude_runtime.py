@@ -378,8 +378,8 @@ class ClaudeSession:
         command += ["--model", self._spawn_model(model)]
         if disable_tools:
             # Commit reviews receive the diff in the prompt and must not run
-            # workspace tools. Project hooks at spawn are a separate trust gate.
-            command += ["--tools", ""]
+            # built-in tools, MCP servers, connectors or project/user hooks.
+            command += ["--tools", "", "--strict-mcp-config", "--setting-sources", ""]
         if effort:
             command += ["--effort", effort]
         command += ["--resume", resume] if resume else ["--session-id", self.session_ref]
@@ -393,7 +393,10 @@ class ClaudeSession:
         self._events: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self._write_lock = threading.Lock()
         try:
-            self.process = spawn(command, cwd=self.workspace, env=session_env(), stdin=subprocess.PIPE,
+            child_environment = session_env()
+            if disable_tools:
+                child_environment["ENABLE_CLAUDEAI_MCP_SERVERS"] = "false"
+            self.process = spawn(command, cwd=self.workspace, env=child_environment, stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                                  encoding="utf-8", errors="replace")
         except OSError:

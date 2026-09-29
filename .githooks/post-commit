@@ -1,3 +1,8 @@
 #!/bin/sh
-# Queue only; never run a provider or block the commit.
-python -m tools.agent_relay enqueue-commit >/dev/null 2>&1 || true
+# Queue only; never run a provider or block the commit. Installed in the
+# common Git hooks directory, with a standalone relay copy beside this hook.
+common=$(git rev-parse --path-format=absolute --git-common-dir) || exit 0
+if ! python "$common/hooks/agent-relay.py" enqueue-commit >/dev/null 2>&1; then
+    mkdir -p "$common/agent-relay"
+    printf '%s\n' 'post-commit relay enqueue failed; run agent_relay status' >> "$common/agent-relay/hook-errors.log"
+fi

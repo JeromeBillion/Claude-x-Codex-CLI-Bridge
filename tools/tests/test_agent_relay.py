@@ -1,13 +1,19 @@
 """Commit relay tests with no provider calls or subscription usage."""
 
 from pathlib import Path
+from contextlib import redirect_stdout
+from io import StringIO
 import json
+import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from tools.agent_relay import Request, claim, common_state, complete, enqueue, enqueue_head, lane_from_branch, watch
+from tools.agent_relay import (Request, _review_codex, claim, common_state, complete, enqueue,
+                               main,
+                               enqueue_head, hook_effective, install_hook, lane_from_branch, watch)
 
 
 SHA = "a" * 40
@@ -53,6 +59,82 @@ class RelayTests(unittest.TestCase):
             self.assertTrue(enqueue(state, new))
             self.assertTrue((state / "superseded" / f"{old.key}.json").exists())
             self.assertEqual(claim(state, "claude")[1], new)
+
+    def test_claim_uses_created_at_order_instead_of_sha_order(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
+            state = Path(tmp)
+            late = Request("a" * 40, "codex", "claude", "codex/late", "2026-09-29T02:00:00Z")
+            early = Request("f" * 40, "codex", "claude", "codex/early", "2026-09-29T01:00:00Z")
+            enqueue(state, late)
+            enqueue(state, early)
+            self.assertEqual(claim(state, "claude")[1], early)
+
+    @unittest.skipUnless(os.name == "nt", "Windows file-sharing semantics")
+    def test_open_pending_file_does_not_crash_claim_or_queue_extra_review(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
+            state = Path(tmp)
+            old, new = self.request("a" * 40), self.request("b" * 40)
+            self.assertTrue(enqueue(state, old))
+            pending = state / "pending" / f"{old.key}.json"
+            with pending.open("rb") as held:
+                self.assertFalse(held.closed)
+                self.assertIsNone(claim(state, "claude"))
+                self.assertFalse(enqueue(state, new))
+                self.assertFalse((state / "pending" / f"{new.key}.json").exists())
+            self.assertTrue(enqueue(state, new))
+            self.assertEqual(claim(state, "claude")[1], new)
+
+    def test_common_hook_queues_commit_from_pre_relay_worktree(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
+            root = Path(tmp)
+            repo, old = root / "repo", root / "old-worktree"
+            repo.mkdir()
+            def run(where, *args):
+                return subprocess.run(["git", *args], cwd=where, capture_output=True, check=True)
+            run(repo, "init", "-q")
+            run(repo, "config", "user.email", "test@example.invalid")
+            run(repo, "config", "user.name", "Test")
+            (repo / "initial.txt").write_text("initial\n", encoding="utf-8")
+            run(repo, "add", "initial.txt")
+            run(repo, "commit", "-qm", "initial")
+            install_hook(repo)
+            run(repo, "worktree", "add", "-qb", "claude/old", str(old), "HEAD")
+            self.assertTrue(hook_effective(old))
+            self.assertFalse((old / "tools" / "agent_relay.py").exists())
+            (old / "change.py").write_text("x = 1\n", encoding="utf-8")
+            run(old, "add", "change.py")
+            run(old, "commit", "-qm", "feat: pre-relay branch")
+            pending = list((common_state(repo) / "pending").glob("*-codex.json"))
+            self.assertEqual(len(pending), 1)
+            self.assertFalse((common_state(repo) / "hook-errors.log").exists())
+            run(repo, "worktree", "remove", "-f", str(old))
+
+    def test_codex_unattended_review_fails_before_transport_spawn(self):
+        with self.assertRaisesRegex(RuntimeError, "disabled until tools can be isolated"):
+            _review_codex(Path.cwd(), Path.cwd(), self.request(), "untrusted diff")
+
+    def test_missing_report_and_retry_are_fixed_messages(self):
+        for command in ("show-report", "retry"):
+            result = subprocess.run([sys.executable, "-m", "tools.agent_relay", command,
+                                     "f" * 40, "--agent", "claude"], cwd=Path.cwd(),
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 1)
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertNotIn(str(Path.cwd()), result.stderr)
+
+    def test_done_review_can_be_explicitly_requested_again(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmp:
+            state = Path(tmp)
+            request = self.request()
+            enqueue(state, request)
+            processing, _ = claim(state, "claude")
+            complete(state, processing, request, "old review", ok=True)
+            with patch("tools.agent_relay.common_state", return_value=state), \
+                 patch.object(sys, "argv", ["agent_relay", "retry", SHA, "--agent", "claude", "--from-done"]), \
+                 redirect_stdout(StringIO()):
+                self.assertEqual(main(), 0)
+            self.assertTrue((state / "pending" / f"{request.key}.json").exists())
+            self.assertFalse((state / "done" / f"{request.key}.json").exists())
 
     def test_capped_watcher_runs_one_fake_review(self):
         with tempfile.TemporaryDirectory() as tmp:
