@@ -21,6 +21,7 @@ from tools.codex_app_server import AppServerTransport, CodexRuntime, ThreadStore
 from tools.codex_probe import safe_child_env
 from tools.desktop_state import BLOCKING_KINDS, Collaboration, TurnRecord, handoff_text
 from tools.runtime_events import Envelope
+from tools.staged_edits import EditProposalError, StagedEdit, stage_proposals
 
 
 def private_state_dir() -> Path:
@@ -94,7 +95,7 @@ class DesktopHost:
         ttk.Label(options, text="Collaboration lead").grid(row=1, column=4, sticky="w")
         ttk.Combobox(options, textvariable=self.collaboration_lead, state="readonly", width=12,
                      values=("codex", "claude")).grid(row=2, column=4, sticky="w")
-        ttk.Label(options, text="Ask every edit = read-only proposal until per-edit apply is available.").grid(
+        ttk.Label(options, text="Ask every edit = read-only Codex turn, then inspect and approve each proposed file diff.").grid(
             row=3, column=0, columnspan=5, sticky="w", pady=4)
         ttk.Label(options, text="Auto-accept requires explicit trust of the exact folder; network remains disabled for Codex.").grid(
             row=4, column=0, columnspan=5, sticky="w")
@@ -260,6 +261,13 @@ class DesktopHost:
             runtime.open_thread(self.workspace, approval_mode=approval, trusted_folders=self.codex_trust)
         turn = TurnRecord("codex", model)
         self.messages.put(("line", f"\nCODEX {role.upper()} / {model} / native thread {runtime.thread_id}\n"))
+        if approval == "ask_every_edit" and role == "answer":
+            text += ("\n\nIf this request needs file edits, do not write files. Propose each edit in one "
+                     "fenced JSON block whose opening line is exactly ```codex-edits, with {\"edits\":[{\"path\":\"relative/posix/path\","
+                     "\"old_text\":\"exact unique existing text, or null for a new file\","
+                     "\"new_text\":\"replacement text, or null to delete an entire file\"}]}. "
+                     "Use at most one edit per file. The host will show a diff and ask separately before applying "
+                     "each edit. If no file edits are needed, answer normally without this block.")
         runtime.start_turn(text, model, effort or None)
         while True:
             try:
@@ -288,7 +296,27 @@ class DesktopHost:
                     except Exception:
                         pass
                 self.history.append(turn)
+                if turn.ok and approval == "ask_every_edit" and role == "answer":
+                    self._review_codex_edits(turn)
                 return turn
+
+    def _review_codex_edits(self, turn: TurnRecord) -> None:
+        assert self.workspace is not None
+        try:
+            staged = stage_proposals(self.workspace, turn.text)
+        except EditProposalError as exc:
+            self.messages.put(("line", f"\n[Codex edit proposal rejected: {exc}. No files applied.]\n"))
+            return
+        for edit in staged:
+            if not self._ask("edit_review", edit):
+                self.messages.put(("line", f"\n[Declined edit: {edit.relative}]\n"))
+                continue
+            try:
+                edit.apply()
+            except EditProposalError as exc:
+                self.messages.put(("line", f"\n[Edit not applied: {edit.relative}: {exc}]\n"))
+            else:
+                self.messages.put(("line", f"\n[Applied approved edit: {edit.relative}]\n"))
 
     def _claude_credit_billed(self, model: str) -> bool:
         # The live menu knows when "default" currently resolves to Fable; the adapter re-checks at spawn.
@@ -387,6 +415,38 @@ class DesktopHost:
             threading.Thread(target=stop, daemon=True).start()
 
     def _dialog(self, kind: str, data: Any) -> Any:
+        if kind == "edit_review":
+            edit: StagedEdit = data
+            window = tk.Toplevel(self.root)
+            window.title(f"Review one Codex edit: {edit.relative}")
+            window.geometry("900x650")
+            ttk.Label(window, text=f"Apply this one change to {edit.relative}? Review the complete diff.",
+                      wraplength=850).pack(anchor="w", padx=8, pady=8)
+            diff_frame = ttk.Frame(window)
+            diff_frame.pack(fill="both", expand=True, padx=8)
+            diff_view = tk.Text(diff_frame, wrap="none")
+            vertical = ttk.Scrollbar(diff_frame, orient="vertical", command=diff_view.yview)
+            horizontal = ttk.Scrollbar(diff_frame, orient="horizontal", command=diff_view.xview)
+            diff_view.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+            diff_view.insert("1.0", edit.diff)
+            diff_view.configure(state="disabled")
+            diff_view.grid(row=0, column=0, sticky="nsew")
+            vertical.grid(row=0, column=1, sticky="ns")
+            horizontal.grid(row=1, column=0, sticky="ew")
+            diff_frame.rowconfigure(0, weight=1)
+            diff_frame.columnconfigure(0, weight=1)
+            result: dict[str, bool] = {"value": False}
+            buttons = ttk.Frame(window, padding=8)
+            buttons.pack(fill="x")
+            def choose(allow: bool) -> None:
+                result["value"] = allow
+                window.destroy()
+            ttk.Button(buttons, text="Apply this edit", command=lambda: choose(True)).pack(side="right")
+            ttk.Button(buttons, text="Decline", command=lambda: choose(False)).pack(side="right", padx=8)
+            window.transient(self.root)
+            window.grab_set()
+            self.root.wait_window(window)
+            return result["value"]
         if kind == "handoff":
             window = tk.Toplevel(self.root)
             window.title("Review cross-provider handoff")
@@ -429,8 +489,8 @@ class DesktopHost:
         detail = event.data.get("command") or event.data.get("input") or event.data.get("reason") or event.data.get("family")
         if kind == "codex_approval":
             if data[1] == "ask_every_edit":
-                messagebox.showwarning("Read-only proposal mode",
-                                       f"Codex requested permission beyond read-only execution:\n\n{detail}\n\nThis host cannot stage and approve each edit yet. The request will be declined.")
+                messagebox.showwarning("Read-only Codex execution",
+                                       f"Codex requested permission beyond read-only execution:\n\n{detail}\n\nUse a codex-edits proposal for the host-owned review path. This request will be declined.")
                 return "decline"
             return "accept" if messagebox.askyesno("Codex approval required", f"Review and allow this one request?\n\n{detail}") else "decline"
         return messagebox.askyesno("Claude approval required", f"Review and allow this one tool request?\n\n{detail}")

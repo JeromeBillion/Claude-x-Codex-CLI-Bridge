@@ -1,0 +1,105 @@
+"""Focused tests for the host-owned Codex file-edit boundary."""
+
+import json
+from pathlib import Path
+import queue
+import tempfile
+import unittest
+from unittest.mock import Mock
+
+from tools.desktop import DesktopHost
+from tools.desktop_state import TurnRecord
+from tools.staged_edits import EditProposalError, stage_proposals
+
+
+def proposal(*edits):
+    return "Answer\n```codex-edits\n" + json.dumps({"edits": list(edits)}) + "\n```"
+
+
+class StagedEditTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def test_exact_replacement_requires_individual_apply(self):
+        target = self.root / "app.py"
+        target.write_text("first\nsecond\n", encoding="utf-8")
+        staged = stage_proposals(self.root, proposal({"path": "app.py", "old_text": "second", "new_text": "changed"}))
+        self.assertEqual(target.read_text(encoding="utf-8"), "first\nsecond\n")
+        self.assertIn("-second", staged[0].diff)
+        staged[0].apply()
+        self.assertEqual(target.read_text(encoding="utf-8"), "first\nchanged\n")
+
+    def test_diff_remains_readable_without_final_newline(self):
+        target = self.root / "plain.txt"
+        target.write_text("before", encoding="utf-8")
+        edit = stage_proposals(self.root, proposal({"path": "plain.txt", "old_text": "before", "new_text": "after"}))[0]
+        self.assertIn("-before\n\\ No newline at end of file\n+after", edit.diff)
+
+    def test_stale_file_cannot_be_overwritten_after_review(self):
+        target = self.root / "app.py"
+        target.write_text("before", encoding="utf-8")
+        edit = stage_proposals(self.root, proposal({"path": "app.py", "old_text": "before", "new_text": "after"}))[0]
+        target.write_text("new user work", encoding="utf-8")
+        with self.assertRaisesRegex(EditProposalError, "changed since review"):
+            edit.apply()
+        self.assertEqual(target.read_text(encoding="utf-8"), "new user work")
+
+    def test_create_and_delete_require_explicit_exact_state(self):
+        create = stage_proposals(self.root, proposal({"path": "new.txt", "old_text": None, "new_text": "hello"}))[0]
+        self.assertFalse((self.root / "new.txt").exists())
+        create.apply()
+        self.assertEqual((self.root / "new.txt").read_text(encoding="utf-8"), "hello")
+        delete = stage_proposals(self.root, proposal({"path": "new.txt", "old_text": "hello", "new_text": None}))[0]
+        delete.apply()
+        self.assertFalse((self.root / "new.txt").exists())
+
+    def test_rejects_unsafe_paths_and_ambiguous_replacements(self):
+        (self.root / "x.txt").write_text("same same", encoding="utf-8")
+        for name in ("../escape.txt", "/absolute.txt", ".git/config", "a/.git/config", "C:/windows", "CON.txt", "a\\b"):
+            with self.subTest(name=name), self.assertRaises(EditProposalError):
+                stage_proposals(self.root, proposal({"path": name, "old_text": None, "new_text": "x"}))
+        with self.assertRaisesRegex(EditProposalError, "match exactly once"):
+            stage_proposals(self.root, proposal({"path": "x.txt", "old_text": "same", "new_text": "other"}))
+
+    def test_rejects_link_escape(self):
+        outside = self.root.parent / (self.root.name + "-outside")
+        outside.mkdir()
+        self.addCleanup(lambda: outside.rmdir())
+        link = self.root / "link"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("Directory symlinks unavailable on this host")
+        with self.assertRaisesRegex(EditProposalError, "link"):
+            stage_proposals(self.root, proposal({"path": "link/escape.txt", "old_text": None, "new_text": "x"}))
+
+    def test_rejects_whole_batch_before_any_apply(self):
+        (self.root / "valid.txt").write_text("old", encoding="utf-8")
+        with self.assertRaises(EditProposalError):
+            stage_proposals(self.root, proposal(
+                {"path": "valid.txt", "old_text": "old", "new_text": "new"},
+                {"path": "../escape.txt", "old_text": None, "new_text": "bad"},
+            ))
+        self.assertEqual((self.root / "valid.txt").read_text(encoding="utf-8"), "old")
+
+    def test_desktop_requires_separate_yes_for_each_file(self):
+        (self.root / "one.txt").write_text("one", encoding="utf-8")
+        (self.root / "two.txt").write_text("two", encoding="utf-8")
+        host = DesktopHost.__new__(DesktopHost)
+        host.workspace = self.root
+        host.messages = queue.Queue()
+        host._ask = Mock(side_effect=[False, True])
+        turn = TurnRecord("codex", "catalog-model", text=proposal(
+            {"path": "one.txt", "old_text": "one", "new_text": "changed"},
+            {"path": "two.txt", "old_text": "two", "new_text": "changed"},
+        ))
+        host._review_codex_edits(turn)
+        self.assertEqual(host._ask.call_count, 2)
+        self.assertEqual((self.root / "one.txt").read_text(encoding="utf-8"), "one")
+        self.assertEqual((self.root / "two.txt").read_text(encoding="utf-8"), "changed")
+
+
+if __name__ == "__main__":
+    unittest.main()
