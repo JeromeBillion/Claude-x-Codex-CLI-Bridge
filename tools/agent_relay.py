@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -25,6 +26,7 @@ import uuid
 SHA = re.compile(r"^[0-9a-f]{40,64}$")
 LANES = ("codex", "claude")
 MAX_DIFF_CHARS = 36_000
+RENAME_RETRIES = 3
 
 
 def git(*args: str, cwd: Path | None = None) -> str:
@@ -38,6 +40,52 @@ def common_state(workspace: Path) -> Path:
     if not common.is_absolute():
         common = workspace / common
     return common.resolve() / "agent-relay"
+
+
+def _move_with_retry(source: Path, destination: Path) -> bool:
+    """A Windows reader may briefly prevent a rename; leave the queue intact."""
+    for attempt in range(RENAME_RETRIES):
+        try:
+            source.rename(destination)
+            return True
+        except OSError:
+            if attempt + 1 < RENAME_RETRIES:
+                time.sleep(0.05)
+    return False
+
+
+def _hook_config(workspace: Path) -> str | None:
+    result = subprocess.run(["git", "config", "--local", "--get", "core.hooksPath"], cwd=workspace,
+                            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def hook_effective(workspace: Path) -> bool:
+    common = common_state(workspace).parent
+    hooks = common / "hooks"
+    configured = _hook_config(workspace)
+    return bool(configured and Path(configured).is_absolute() and Path(configured).resolve() == hooks
+                and (hooks / "post-commit").is_file() and (hooks / "agent-relay.py").is_file())
+
+
+def install_hook(workspace: Path) -> Path:
+    """Install one branch-independent hook under the common Git directory."""
+    common = common_state(workspace).parent
+    hooks = common / "hooks"
+    current = _hook_config(workspace)
+    if current and current not in {str(hooks), ".githooks"}:
+        raise RuntimeError("Existing custom hooksPath; incorporate the relay hook manually")
+    source_hook = Path(__file__).resolve().parents[1] / ".githooks" / "post-commit"
+    destination = hooks / "post-commit"
+    if destination.exists() and destination.read_bytes() != source_hook.read_bytes():
+        raise RuntimeError("Existing common post-commit hook; incorporate the relay hook manually")
+    hooks.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(Path(__file__).resolve(), hooks / "agent-relay.py")
+    shutil.copyfile(source_hook, destination)
+    destination.chmod(destination.stat().st_mode | 0o111)
+    subprocess.run(["git", "config", "--local", "core.hooksPath", str(hooks)], cwd=workspace,
+                   check=True, capture_output=True)
+    return destination
 
 
 def lane_from_branch(branch: str) -> str | None:
@@ -98,8 +146,6 @@ def enqueue(state: Path, request: Request) -> bool:
     if any((state / folder / f"{request.key}.json").exists()
            for folder in ("pending", "processing", "done", "failed", "superseded")):
         return False
-    if not _write_new(state / "pending" / f"{request.key}.json", asdict(request)):
-        return False
     for older in (state / "pending").glob(f"*-{request.target}.json"):
         if older.name == f"{request.key}.json":
             continue
@@ -110,22 +156,26 @@ def enqueue(state: Path, request: Request) -> bool:
         if previous.branch == request.branch:
             destination = state / "superseded" / older.name
             destination.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                older.rename(destination)
-            except FileNotFoundError:
-                pass  # a watcher already claimed it
-    return True
+            if not _move_with_retry(older, destination) and older.exists():
+                # Never leave both old and new pending: that can spend two turns.
+                return False
+    return _write_new(state / "pending" / f"{request.key}.json", asdict(request))
 
 
 def claim(state: Path, target: str) -> tuple[Path, Request] | None:
     if target not in LANES:
         raise ValueError("Unknown lane")
-    for candidate in sorted((state / "pending").glob(f"*-{target}.json")):
+    def created_at(path: Path) -> tuple[str, str]:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8")).get("created_at")
+            return (value if isinstance(value, str) else "", path.name)
+        except (OSError, ValueError, TypeError):
+            return ("", path.name)
+
+    for candidate in sorted((state / "pending").glob(f"*-{target}.json"), key=created_at):
         processing = state / "processing" / candidate.name
         processing.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            candidate.rename(processing)
-        except FileNotFoundError:
+        if not _move_with_retry(candidate, processing):
             continue
         try:
             request = Request(**json.loads(processing.read_text(encoding="utf-8")))
@@ -161,7 +211,12 @@ def enqueue_head(workspace: Path) -> str:
         return "ignored: no reviewable change"
     target = "claude" if source == "codex" else "codex"
     request = Request(commit, source, target, branch, datetime.now(timezone.utc).isoformat())
-    return "queued" if enqueue(common_state(workspace), request) else "already queued"
+    state = common_state(workspace)
+    if enqueue(state, request):
+        return "queued"
+    return ("already queued" if any((state / folder / f"{request.key}.json").exists()
+                                for folder in ("pending", "processing", "done", "failed", "superseded"))
+            else "not queued: pending request busy; retry enqueue-commit")
 
 
 def review_prompt(workspace: Path, request: Request) -> str:
@@ -181,42 +236,9 @@ def review_prompt(workspace: Path, request: Request) -> str:
 
 
 def _review_codex(workspace: Path, state: Path, request: Request, prompt: str) -> str:
-    from tools.codex_app_server import AppServerTransport, CodexRuntime, ThreadStore
-    from tools.codex_probe import safe_child_env
-
-    transport = AppServerTransport(env=safe_child_env())
-    try:
-        runtime = CodexRuntime(transport, ThreadStore(state / "threads" / f"{request.key}.json"))
-        runtime.initialize()
-        runtime.discover()
-        candidates = [m for m in runtime.models.values() if not m.get("hidden")]
-        if not candidates:
-            raise RuntimeError("No visible Codex model in account catalog")
-        chosen = next((m for m in candidates if m.get("isDefault")), candidates[0])
-        runtime.open_thread(workspace, approval_mode="ask_every_edit")
-        runtime.start_turn(prompt, chosen["id"])
-        chunks: list[str] = []
-        while True:
-            try:
-                event = runtime.next_event(timeout=300)
-            except queue.Empty as exc:
-                runtime.interrupt()
-                raise RuntimeError("Codex review timed out") from exc
-            if event.kind == "text_delta":
-                chunks.append(str(event.data.get("text", "")))
-            elif event.kind == "approval_request" and event.data.get("family") in {"command", "file_change"}:
-                runtime.decide_approval(event.data["request_id"], "decline")
-            elif event.kind in {"approval_request", "mcp_elicitation", "connector_approval_request"}:
-                runtime.interrupt()
-                raise RuntimeError("Unsupported approval family during review")
-            elif event.kind == "turn_finished":
-                if not event.data.get("ok"):
-                    raise RuntimeError("Codex review turn failed")
-                return "".join(chunks)
-            elif event.kind == "process_exited":
-                raise RuntimeError("Codex App Server exited")
-    finally:
-        transport.close()
+    # readOnly limits local filesystem writes, not MCP/app calls. The installed
+    # App Server has no verified host-side pre-call veto for unattended reviews.
+    raise RuntimeError('Codex unattended review disabled until tools can be isolated')
 
 
 def _review_claude(workspace: Path, state: Path, request: Request, prompt: str) -> str:
@@ -239,6 +261,9 @@ def _review_claude(workspace: Path, state: Path, request: Request, prompt: str) 
         for event in session.events():
             if event.kind == "text_delta":
                 chunks.append(str(event.data.get("text", "")))
+            elif event.kind == "tool_started":
+                session.fail_turn()
+                raise RuntimeError("Tool activity during isolated Claude review")
             elif event.kind == "approval_request" and event.data.get("policy") == "ask":
                 session.answer_approval(str(event.data["request_id"]), allow=False)
             elif event.kind == "turn_finished":
@@ -286,6 +311,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Local bounded Claude/Codex commit relay")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("enqueue-commit", help="Queue the current owned-branch commit (for post-commit hook)")
+    commands.add_parser("install-hook", help="Install branch-independent hook in common Git hooks directory")
     status = commands.add_parser("status", help="Show local queue counts")
     status.add_argument("--agent", choices=LANES, required=True)
     watcher = commands.add_parser("watch", help="Run a bounded foreground reviewer")
@@ -302,12 +328,28 @@ def main() -> int:
     retry.add_argument("--agent", choices=LANES, required=True)
     retry.add_argument("--recover-processing", action="store_true",
                        help="Recover a stuck claim only after stopping all watchers for that agent")
+    retry.add_argument("--from-done", action="store_true",
+                       help="Re-request a completed review after stopping watchers for that agent")
     args = parser.parse_args()
     workspace = Path.cwd().resolve()
     state = common_state(workspace)
     if args.command == "enqueue-commit":
-        print(enqueue_head(workspace))
+        result = enqueue_head(workspace)
+        print(result)
+        if result.startswith("not queued:"):
+            return 1
+    elif args.command == "install-hook":
+        try:
+            install_hook(workspace)
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+            print(f"hook not installed: {type(exc).__name__}", file=sys.stderr)
+            return 1
+        print("hook installed in common Git directory")
     elif args.command == "status":
+        print("hook: effective in this worktree" if hook_effective(workspace)
+              else "hook: not effective in this worktree")
+        errors = state / "hook-errors.log"
+        print(f"hook errors: {len(errors.read_text(encoding='utf-8').splitlines()) if errors.exists() else 0}")
         for folder in ("pending", "processing", "done", "failed", "superseded"):
             print(f"{folder}: {len(list((state / folder).glob(f'*-{args.agent}.json')))}")
     elif args.command == "watch":
@@ -319,15 +361,29 @@ def main() -> int:
         if not SHA.fullmatch(args.commit):
             parser.error("use a full commit SHA")
         path = state / "reports" / f"{args.commit}-{args.agent}.json"
-        print(path.read_text(encoding="utf-8"))
+        if (state / "pending" / path.name).exists() or (state / "processing" / path.name).exists():
+            print("review request pending", file=sys.stderr)
+            return 1
+        try:
+            print(path.read_text(encoding="utf-8"))
+        except OSError:
+            print("review report not found", file=sys.stderr)
+            return 1
     elif args.command == "retry":
         if not SHA.fullmatch(args.commit):
             parser.error("use a full commit SHA")
-        source_dir = "processing" if args.recover_processing else "failed"
+        if args.recover_processing and args.from_done:
+            parser.error("choose one retry source")
+        source_dir = "processing" if args.recover_processing else "done" if args.from_done else "failed"
         source = state / source_dir / f"{args.commit}-{args.agent}.json"
         target = state / "pending" / source.name
         target.parent.mkdir(parents=True, exist_ok=True)
-        source.rename(target)
+        if target.exists():
+            print("review request already pending", file=sys.stderr)
+            return 1
+        if not _move_with_retry(source, target):
+            print("review request not found or busy", file=sys.stderr)
+            return 1
         print("requeued")
     return 0
 
