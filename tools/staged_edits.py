@@ -44,7 +44,11 @@ def _target(workspace: Path, relative: str) -> Path:
         # Windows reparse points and POSIX symlinks must not redirect writes.
         if current.is_symlink() or getattr(current, "is_junction", lambda: False)():
             raise EditProposalError("Edit path passes through a link")
-    if target.parent.resolve(strict=True) != target.parent or not target.parent.is_dir():
+    try:
+        parent = target.parent.resolve(strict=True)
+    except OSError as exc:
+        raise EditProposalError("Edit parent must already exist inside the project") from exc
+    if parent != target.parent or not parent.is_dir():
         raise EditProposalError("Edit parent must already exist inside the project")
     if not target.resolve(strict=False).is_relative_to(root):
         raise EditProposalError("Edit path escapes the project")
