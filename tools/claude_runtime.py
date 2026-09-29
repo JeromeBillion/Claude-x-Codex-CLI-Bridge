@@ -338,6 +338,7 @@ class ClaudeSession:
                  trust: TrustStore, credit_consent: CreditConsent | None = None,
                  effort: str | None = None, approval_mode: str = ASK_EVERY_EDIT,
                  auto_trust: TrustedFolderStore | None = None,
+                 disable_tools: bool = False,
                  spawn: Callable[..., "subprocess.Popen[str]"] = subprocess.Popen) -> None:
         if not trust.is_trusted(workspace):
             raise RuntimeRefused("workspace_not_trusted")
@@ -375,6 +376,10 @@ class ClaudeSession:
         # settings, which the consent check cannot see. "default" is pinned to what
         # the menu says it resolves to right now.
         command += ["--model", self._spawn_model(model)]
+        if disable_tools:
+            # Commit reviews receive the diff in the prompt and must not run
+            # workspace tools. Project hooks at spawn are a separate trust gate.
+            command += ["--tools", ""]
         if effort:
             command += ["--effort", effort]
         command += ["--resume", resume] if resume else ["--session-id", self.session_ref]
