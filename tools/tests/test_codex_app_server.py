@@ -78,9 +78,11 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(discovered["planCategory"], "plus")
             self.assertEqual(set(runtime.models), {"first", "second"})
             self.assertEqual(runtime.open_thread(workspace), "thr_native")
-            self.assertEqual(fake.calls[-1][1]["sandbox"], "readOnly")
+            self.assertEqual(fake.calls[-1][1]["sandbox"], "read-only")
+            self.assertEqual(fake.calls[-1][1]["approvalPolicy"], "on-request")
             runtime.start_turn("Read this repository", "second", "high")
             self.assertEqual(fake.calls[-1][1]["sandboxPolicy"], {"type": "readOnly"})
+            self.assertEqual(fake.calls[-1][1]["approvalPolicy"], "on-request")
             with self.assertRaises(ValueError):
                 runtime.start_turn("test", "unlisted")
             runtime.interrupt()
@@ -91,7 +93,8 @@ class RuntimeTests(unittest.TestCase):
             method, params = restarted.transport.calls[-1]
             self.assertEqual(method, "thread/resume")
             self.assertEqual(params["threadId"], "thr_native")
-            self.assertEqual(params["sandbox"], "readOnly")
+            self.assertEqual(params["sandbox"], "read-only")
+            self.assertEqual(params["approvalPolicy"], "on-request")
 
     def test_approvals_require_explicit_decision_and_other_requests_stay_blocked(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -157,14 +160,20 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaises(AppServerError):
                 runtime.open_thread(workspace, approval_mode="auto_accept_trusted", trusted_folders=trust)
             runtime.open_thread(workspace)
-            self.assertEqual(runtime.transport.calls[-1][1]["sandbox"], "readOnly")
+            self.assertEqual(runtime.transport.calls[-1][1]["sandbox"], "read-only")
             trust.trust(workspace)  # represents the user's explicit click
             runtime.set_approval_mode("auto_accept_trusted", workspace, trust)
             runtime.start_turn("Work here", "first")
             policy = runtime.transport.calls[-1][1]["sandboxPolicy"]
             self.assertEqual(policy["type"], "workspaceWrite")
+            self.assertEqual(runtime.transport.calls[-1][1]["approvalPolicy"], "on-request")
             self.assertEqual(policy["writableRoots"], [str(workspace.resolve())])
             self.assertFalse(policy["networkAccess"])
+            auto = CodexRuntime(FakeTransport(), ThreadStore(Path(tmp) / "auto-state.json"))
+            auto.discover()
+            auto.open_thread(workspace, approval_mode="auto_accept_trusted", trusted_folders=trust)
+            self.assertEqual(auto.transport.calls[-1][1]["sandbox"], "workspace-write")
+            self.assertEqual(auto.transport.calls[-1][1]["approvalPolicy"], "on-request")
             with self.assertRaises(AppServerError):
                 runtime.set_approval_mode("ask_every_edit", workspace, trust)
 
