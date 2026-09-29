@@ -33,10 +33,27 @@ and `credit_billed`; `models_report` is the redacted form. The host then calls
   auto-accepted one is followed by `approval_decision` with
   `by: "auto_trusted"`, and a user answer produces `by: "user"`.
 
-`ask_every_edit` currently uses Codex `readOnly` with `onRequest`; the timeline
-states that this is proposal-only. A per-edit staged diff/accept/apply path is
-still needed before calling the default mode fully functional. In this mode,
-Codex command/file escalation is displayed and declined. In trusted auto mode,
+`ask_every_edit` uses Codex `readOnly` with `onRequest`. For a GPT-only answer
+or a Codex-led collaboration draft,
+the host asks Codex to return any desired file changes in a single
+`codex-edits` JSON block. `tools/staged_edits.py` validates exact relative
+paths and current text, shows a full diff for each file, and applies only that
+file after a separate user approval. It rejects links, missing/ambiguous old
+text, changed files, duplicate targets and oversized proposals. Unrecognized
+or malformed proposals are never applied. This currently supports UTF-8 text
+replacements, new files in existing directories and whole-file deletion; it
+accepts LF-only proposals against uniformly CRLF files while retaining CRLF in
+the result. Mixed-ending files require the proposal's exact line endings. The
+diff always shows the real before and after; edits to agent configuration paths
+show an extra warning before the user's per-file decision. In collaboration,
+the host stages the proposal again against the live file after both votes, so
+the diff presented for approval reflects any intervening workspace changes. It
+does not apply binary edits, directory creation or Codex edits from a
+collaboration review turn. In collaboration, proposals are validated before
+partner review and applied only after both providers approve the exact draft
+and the user approves each file. Unsupported cases require trusted auto
+mode or handle them outside the host. Codex command/file escalation in default
+mode remains displayed and declined. In trusted auto mode,
 a file or command approval issued by App Server blocks the turn and requires
 an explicit user answer. MCP elicitation, connector input and unknown approval families are
 shown as unsupported and interrupt the turn. No silent approval is sent.
