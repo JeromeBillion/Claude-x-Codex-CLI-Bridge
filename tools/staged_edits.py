@@ -151,11 +151,13 @@ def stage_proposals(workspace: Path, response: str) -> list[StagedEdit]:
                 after = None
         if after == before:
             raise EditProposalError("Edit has no effect")
-        diff = "".join(difflib.unified_diff(
+        diff_lines = difflib.unified_diff(
             (before or "").splitlines(keepends=True), (after or "").splitlines(keepends=True),
             fromfile=f"a/{relative}" if before is not None else "/dev/null",
             tofile=f"b/{relative}" if after is not None else "/dev/null",
-        ))
+        )
+        diff = "".join(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+                       for line in diff_lines)
         if not diff:
             diff = f"Create empty file: {relative}\n"
         staged.append(StagedEdit(workspace.resolve(strict=True), relative, before, after, diff))
