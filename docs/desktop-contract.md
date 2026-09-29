@@ -49,9 +49,18 @@ a file or command approval issued by App Server blocks the turn and requires
 an explicit user answer. MCP elicitation, connector input and unknown approval families are
 shown as unsupported and interrupt the turn. No silent approval is sent.
 
-Collaboration is deliberately sequential: the user selects a lead based on the
-task, that provider drafts, the user can edit or omit the handoff packet, the
-partner reviews, and the lead confirms. The candidate is
+Collaboration is deliberately sequential. Codex and Claude first make
+independent role nominations for who leads and who gives the final
+review. Both must name the same roles to proceed automatically. Invalid,
+unavailable or disagreeing nominations open a user choice before any draft;
+the selected choice is shown as a user decision. Planning runs with the
+default ask policy and declines edit/command approvals; a tool event invalidates
+the nomination and interrupts where possible. A non-blocking tool could start
+before the host sees its event, so this is still a live safety-review item.
+The chosen lead drafts, the user can edit or omit the handoff
+packet, and both providers review the exact candidate, with the nominated
+final reviewer voting last. This can use up to five subscription turns, which
+the UI states before Send. The candidate is
 jointly presented only if Claude and Codex each return an exact approval of
 the same SHA-256 candidate. Any disagreement, malformed vote, failure or
 unavailable provider leaves the candidate unapproved and opens a user decision.

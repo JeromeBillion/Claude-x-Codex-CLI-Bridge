@@ -243,7 +243,9 @@ of the installed CLIs' skills, MCP servers, plugins and apps. A listing is
 not proof that a tool call works; MCP health checks may contact configured
 servers, and the button sends no model turn.
 Codex resumes its own thread ID after a restart; Claude keeps its own session
-ID. In collaboration, choose which provider leads. The host shows an editable
+ID. In collaboration, both providers nominate a lead and final reviewer; if
+they disagree, the user chooses or leaves the task pending. This can use up to
+five provider turns. The host shows an editable
 cross-provider handoff and labels a result
 jointly approved only after both providers explicitly approve the same text.
 Otherwise, the user decides how to proceed.

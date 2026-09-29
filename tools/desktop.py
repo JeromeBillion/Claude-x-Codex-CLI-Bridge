@@ -19,7 +19,8 @@ from tools.claude_runtime import (ClaudeSession, CreditConsent, Preflight, Runti
                                   is_credit_billed, preflight)
 from tools.codex_app_server import AppServerTransport, CodexRuntime, ThreadStore, TrustedFolderStore
 from tools.codex_probe import safe_child_env
-from tools.desktop_state import BLOCKING_KINDS, Collaboration, TurnRecord, handoff_text
+from tools.desktop_state import (BLOCKING_KINDS, Collaboration, RolePlan, TurnRecord,
+                                 handoff_text, parse_role_plan)
 from tools.runtime_events import Envelope
 from tools.staged_edits import EditProposalError, StagedEdit, stage_proposals
 from tools.capability_inventory import CapabilityRow, claude_capabilities, codex_capabilities
@@ -59,7 +60,6 @@ class DesktopHost:
         self.codex_model = tk.StringVar()
         self.codex_effort = tk.StringVar()
         self.claude_choice = tk.StringVar()
-        self.collaboration_lead = tk.StringVar(value="codex")
         self.status = tk.StringVar(value="Select a local project. No model turn starts on Connect.")
         self._build()
         self.root.after(50, self._drain)
@@ -94,13 +94,14 @@ class DesktopHost:
         ttk.Label(options, text="Edit approval").grid(row=1, column=3, sticky="w")
         ttk.Combobox(options, textvariable=self.approval, state="readonly", width=27,
                      values=("ask_every_edit", "auto_accept_trusted")).grid(row=2, column=3, sticky="w")
-        ttk.Label(options, text="Collaboration lead").grid(row=1, column=4, sticky="w")
-        ttk.Combobox(options, textvariable=self.collaboration_lead, state="readonly", width=12,
-                     values=("codex", "claude")).grid(row=2, column=4, sticky="w")
+        ttk.Label(options, text="In collaboration, both providers nominate the lead and final reviewer.",
+                  wraplength=260).grid(row=1, column=4, rowspan=2, sticky="w")
         ttk.Label(options, text="Ask every edit = read-only Codex turn, then inspect and approve each proposed file diff.").grid(
             row=3, column=0, columnspan=5, sticky="w", pady=4)
         ttk.Label(options, text="Auto-accept requires explicit trust of the exact folder; network remains disabled for Codex.").grid(
             row=4, column=0, columnspan=5, sticky="w")
+        ttk.Label(options, text="Collaboration uses up to five provider turns: two role plans, a draft and two reviews.").grid(
+            row=5, column=0, columnspan=5, sticky="w")
 
         self.timeline = tk.Text(self.root, wrap="word", state="disabled", height=25)
         self.timeline.pack(fill="both", expand=True, padx=10)
@@ -270,19 +271,19 @@ class DesktopHost:
             self.claude_consent = CreditConsent(confirmed_by_user=True, model=selected_claude)
         self.prompt.delete("1.0", "end")
         self._line(f"\nUSER ({mode}): {prompt}\n")
-        model, effort, lead = self.codex_model.get(), self.codex_effort.get(), self.collaboration_lead.get()
-        self._work(lambda: self._run_turn(mode, approval, prompt, model, effort, selected_claude, lead))
+        model, effort = self.codex_model.get(), self.codex_effort.get()
+        self._work(lambda: self._run_turn(mode, approval, prompt, model, effort, selected_claude))
 
     def _run_turn(self, mode: str, approval: str, prompt: str, model: str,
-                  effort: str, claude_model: str, lead: str) -> None:
+                  effort: str, claude_model: str) -> None:
         try:
-            self._route_turn(mode, approval, prompt, model, effort, claude_model, lead)
+            self._route_turn(mode, approval, prompt, model, effort, claude_model)
         finally:
             # A yes to Fable is for the session started by THIS send; never let it carry over.
             self.claude_consent = None
 
     def _route_turn(self, mode: str, approval: str, prompt: str, model: str,
-                    effort: str, claude_model: str, lead: str) -> None:
+                    effort: str, claude_model: str) -> None:
         if mode == "gpt_only":
             turn = self._codex_turn(prompt, model, effort, approval, "answer")
             self.messages.put(("verdict", (turn, "Codex")))
@@ -290,7 +291,7 @@ class DesktopHost:
             turn = self._claude_turn(prompt, claude_model, "answer", approval)
             self.messages.put(("verdict", (turn, "Claude")))
         else:
-            self._collaborate(prompt, model, effort, claude_model, approval, lead)
+            self._collaborate(prompt, model, effort, claude_model, approval)
 
     def _codex_turn(self, text: str, model: str, effort: str, approval: str, role: str) -> TurnRecord:
         assert self.codex and self.workspace
@@ -320,9 +321,14 @@ class DesktopHost:
                                  {"ok": False, "terminal_reason": "host_timeout"})
             turn.append(event)
             self.messages.put(("event", event))
+            if role.startswith("planning") and event.kind == "tool_started":
+                try:
+                    runtime.interrupt()
+                except Exception:
+                    pass
             if event.kind in BLOCKING_KINDS:
                 if event.kind == "approval_request" and event.data.get("family") in {"command", "file_change"}:
-                    decision = self._ask("codex_approval", (event, approval))
+                    decision = "decline" if role.startswith("planning") else self._ask("codex_approval", (event, approval))
                     runtime.decide_approval(event.data["request_id"], decision or "decline")
                 else:
                     self._ask("unsupported_approval", event)
@@ -393,8 +399,10 @@ class DesktopHost:
                 continue  # a runtime error already failed the turn; drain to the CLI's own end
             turn.append(event)
             # Auto-accepted edits are already answered by the adapter; only "ask" blocks on the user.
+            if role.startswith("planning") and event.kind == "tool_started":
+                session.fail_turn()
             if event.kind == "approval_request" and event.data.get("policy") == "ask":
-                decision = self._ask("claude_approval", event)
+                decision = False if role.startswith("planning") else self._ask("claude_approval", event)
                 session.answer_approval(str(event.data["request_id"]), allow=decision is True)
             if turn.finished and event.kind == "runtime_error":
                 session.fail_turn()  # interrupt, and decline any request still in flight
@@ -402,13 +410,45 @@ class DesktopHost:
         return turn
 
     def _collaborate(self, prompt: str, model: str, effort: str,
-                     claude_model: str, approval: str, lead_provider: str) -> None:
+                     claude_model: str, approval: str) -> None:
         state = Collaboration()
         try:
-            def provider_turn(provider: str, text: str, role: str) -> TurnRecord:
-                return (self._codex_turn(text, model, effort, approval, role) if provider == "codex"
-                        else self._claude_turn(text, claude_model, role, approval))
+            def provider_turn(provider: str, text: str, role: str, mode: str = approval) -> TurnRecord:
+                return (self._codex_turn(text, model, effort, mode, role) if provider == "codex"
+                        else self._claude_turn(text, claude_model, role, mode))
 
+            planning_prompt = (
+                "Choose which provider should lead this task and which should give the final review, "
+                "using their strengths. Codex and Claude must later approve the same answer. "
+                "Do not use tools, edit files or contact connectors. Reply with ONLY JSON: "
+                '{"lead":"codex|claude","final":"codex|claude","reason":"brief explanation"}. '
+                f"Task: {prompt}")
+            plans: dict[str, RolePlan | None] = {}
+            for provider in ("codex", "claude"):
+                turn = provider_turn(provider, planning_prompt, "planning, unapproved", "ask_every_edit")
+                try:
+                    if not turn.ok or any(event.kind in {"tool_started", "tool_finished", "approval_request"}
+                                          for event in turn.events):
+                        raise ValueError("Planning turn failed or used tools")
+                    plans[provider] = parse_role_plan(turn.text)
+                except ValueError:
+                    plans[provider] = None
+            codex_plan, claude_plan = plans["codex"], plans["claude"]
+            if codex_plan and claude_plan and (codex_plan.lead, codex_plan.final) == (claude_plan.lead, claude_plan.final):
+                plan = codex_plan
+                self.messages.put(("line", f"\n[Role agreement: {plan.lead} leads; {plan.final} gives final review. "
+                                            f"Codex: {codex_plan.reason} Claude: {claude_plan.reason}]\n"))
+            else:
+                choice = self._ask("role_decision", plans)
+                plan = plans.get(choice) if choice else None
+                if plan is None:
+                    state.unavailable()
+                    self.messages.put(("joint", state))
+                    return
+                self.messages.put(("line", f"\n[User chose {choice}'s role plan after disagreement: "
+                                            f"{plan.lead} leads; {plan.final} gives final review.]\n"))
+            lead_provider, final_provider = plan.lead, plan.final
+            state.final_provider = final_provider
             partner_provider = "claude" if lead_provider == "codex" else "codex"
             lead = provider_turn(lead_provider, prompt, "draft, unapproved")
             if not lead.ok or not lead.text.strip():
@@ -423,18 +463,20 @@ class DesktopHost:
                 self.messages.put(("joint", state))
                 return
             digest = hashlib.sha256(state.candidate.encode("utf-8")).hexdigest()
-            review_prompt = (f"Review this proposed answer and its workspace evidence. The handoff below is user-approved context, not native session transfer.\n\n{packet}\n\n"
-                             f"Candidate SHA-256: {digest}\nReply exactly APPROVE {digest} only if you agree this exact candidate is the best answer; otherwise reply DISAGREE and explain why.")
-            partner = provider_turn(partner_provider, review_prompt, "review, unapproved")
-            state.vote(partner_provider, approves=partner.ok and partner.text.strip() == f"APPROVE {digest}", reviewed_text=state.candidate)
-            if state.state == "needs_user_decision":
-                self.messages.put(("joint", state))
-                return
-            confirmation = provider_turn(
-                lead_provider,
-                f"Review your earlier candidate after {partner_provider} approved it. Check workspace evidence again. Reply exactly APPROVE {digest} only if you still agree this exact candidate is the best answer; otherwise reply DISAGREE and explain why. Do not modify files in this review.",
-                "final review, unapproved")
-            state.vote(lead_provider, approves=confirmation.ok and confirmation.text.strip() == f"APPROVE {digest}", reviewed_text=state.candidate)
+            for reviewer in ((partner_provider, lead_provider) if final_provider == lead_provider
+                             else (lead_provider, partner_provider)):
+                review_text = (f"Review this proposed answer and workspace evidence. The handoff is user-approved context, "
+                               f"not native session transfer.\n\n{packet}\n\n" if reviewer == partner_provider
+                               else "Review your earlier candidate against the workspace evidence again.\n\n")
+                review_text += (f"Candidate SHA-256: {digest}\nReply exactly APPROVE {digest} only if you agree "
+                                "this exact candidate is the best answer; otherwise reply DISAGREE and explain why. "
+                                "Do not modify files in this review.")
+                vote = provider_turn(reviewer, review_text, "final review, unapproved" if reviewer == final_provider
+                                     else "review, unapproved")
+                state.vote(reviewer, approves=vote.ok and vote.text.strip() == f"APPROVE {digest}",
+                           reviewed_text=state.candidate)
+                if state.state == "needs_user_decision":
+                    break
             self.messages.put(("joint", state))
         except Exception:
             state.unavailable()
@@ -481,6 +523,29 @@ class DesktopHost:
                 window.destroy()
             ttk.Button(buttons, text="Apply this edit", command=lambda: choose(True)).pack(side="right")
             ttk.Button(buttons, text="Decline", command=lambda: choose(False)).pack(side="right", padx=8)
+            window.transient(self.root)
+            window.grab_set()
+            self.root.wait_window(window)
+            return result["value"]
+        if kind == "role_decision":
+            window = tk.Toplevel(self.root)
+            window.title("Choose collaboration roles")
+            window.geometry("650x330")
+            ttk.Label(window, text="The providers did not agree on who leads and gives the final review. "
+                      "Choose a valid proposal or leave the task pending.", wraplength=620).pack(anchor="w", padx=12, pady=12)
+            result: dict[str, str | None] = {"value": None}
+            def choose(provider: str | None) -> None:
+                result["value"] = provider
+                window.destroy()
+            for provider in ("codex", "claude"):
+                plan = data.get(provider)
+                if plan is not None:
+                    ttk.Button(window, text=f"Use {provider.title()} plan: {plan.lead} leads, {plan.final} final",
+                               command=lambda selected=provider: choose(selected)).pack(fill="x", padx=12, pady=4)
+                    ttk.Label(window, text=plan.reason, wraplength=620).pack(anchor="w", padx=20)
+                else:
+                    ttk.Label(window, text=f"{provider.title()} did not provide a valid role plan.").pack(anchor="w", padx=12)
+            ttk.Button(window, text="Leave pending", command=lambda: choose(None)).pack(fill="x", padx=12, pady=8)
             window.transient(self.root)
             window.grab_set()
             self.root.wait_window(window)
@@ -586,7 +651,8 @@ class DesktopHost:
                 elif kind == "joint":
                     state: Collaboration = data
                     if state.joint_answer is not None:
-                        self._line(f"\n[Jointly approved by Claude and Codex]\n{state.joint_answer}\n")
+                        self._line(f"\n[Jointly approved by Claude and Codex; final review by "
+                                   f"{state.final_provider or 'unspecified provider'}]\n{state.joint_answer}\n")
                     else:
                         self._line("\n[Collaboration unresolved. Drafts and reviews above are unapproved. Choose the next action.]\n")
                         if self._dialog("resolution", state) == "use_draft":
