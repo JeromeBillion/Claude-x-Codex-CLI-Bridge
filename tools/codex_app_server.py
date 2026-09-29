@@ -301,12 +301,12 @@ class CodexRuntime:
         if stored:
             result = self.transport.request("thread/resume", {
                 "threadId": stored, "cwd": str(workspace),
-                "sandbox": self._sandbox_name(), "approvalPolicy": "onRequest",
+                "sandbox": self._thread_sandbox_name(), "approvalPolicy": "on-request",
             })
         else:
             result = self.transport.request("thread/start", {
-                "cwd": str(workspace), "sandbox": self._sandbox_name(),
-                "approvalPolicy": "onRequest",
+                "cwd": str(workspace), "sandbox": self._thread_sandbox_name(),
+                "approvalPolicy": "on-request",
             })
         self.thread_id = result["thread"]["id"]
         self.store.put(workspace, self.thread_id)
@@ -327,6 +327,11 @@ class CodexRuntime:
     def _sandbox_name(self) -> str:
         return "workspaceWrite" if self.approval_mode == "auto_accept_trusted" else "readOnly"
 
+    def _thread_sandbox_name(self) -> str:
+        # Thread start/resume use SandboxMode's kebab-case enum. Turn/start
+        # uses SandboxPolicy.type's distinct camel-case enum.
+        return "workspace-write" if self.approval_mode == "auto_accept_trusted" else "read-only"
+
     def start_turn(self, text: str, model: str, effort: str | None = None) -> dict[str, Any]:
         if not self.thread_id:
             raise AppServerError("Open a thread first")
@@ -340,7 +345,7 @@ class CodexRuntime:
         if not isinstance(callable_model, str):
             raise ValueError("Catalog entry has no callable model name")
         params: dict[str, Any] = {"threadId": self.thread_id, "input": [{"type": "text", "text": text}], "model": callable_model,
-                                  "approvalPolicy": "onRequest", "cwd": str(self.workspace),
+                                  "approvalPolicy": "on-request", "cwd": str(self.workspace),
                                   "sandboxPolicy": {"type": self._sandbox_name()}}
         if self.approval_mode == "auto_accept_trusted":
             params["sandboxPolicy"].update({"writableRoots": [str(self.workspace)], "networkAccess": False})

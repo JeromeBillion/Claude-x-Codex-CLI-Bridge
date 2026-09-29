@@ -22,8 +22,8 @@ from tools.codex_app_server import AppServerTransport, CodexRuntime, ThreadStore
 
 # Reviewed official CLI release/schema target; fake-server tests exercise our
 # protocol implementation. A real Windows run remains an explicit open gate.
-TESTED_VERSION = (0, 157, 0)
-VERSION_RE = re.compile(r"\b(\d+)\.(\d+)\.(\d+)\b")
+TESTED_VERSION = "0.158.0-alpha.2.1"
+VERSION_RE = re.compile(r"^codex-cli (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\s*$")
 # Public IDs reviewed for this probe target. Catalog entries outside this set
 # are counted, never echoed: a shape check would disclose a short private ID.
 PUBLIC_MODEL_IDS = frozenset({
@@ -52,9 +52,9 @@ def safe_model_id(value: Any) -> str:
     return value if isinstance(value, str) and value in PUBLIC_MODEL_IDS else "unlisted"
 
 
-def version_tuple(value: str) -> tuple[int, int, int] | None:
-    match = VERSION_RE.search(value)
-    return tuple(map(int, match.groups())) if match else None
+def version_id(value: str) -> str | None:
+    match = VERSION_RE.fullmatch(value.strip())
+    return match.group(1) if match else None
 
 
 def run_turn(runtime: CodexRuntime, model: str, prompt: str) -> str:
@@ -89,10 +89,10 @@ def probe(with_turn: bool = False, *, executable: str = "codex") -> dict[str, An
     try:
         version_run = subprocess.run([resolved, "--version"], capture_output=True, text=True,
                                      encoding="utf-8", errors="replace", env=env, timeout=10, check=False)
-        version = version_tuple(version_run.stdout) if version_run.returncode == 0 else None
+        version = version_id(version_run.stdout) if version_run.returncode == 0 else None
         if version is None:
             return report
-        report["cli_version"] = ".".join(map(str, version))
+        report["cli_version"] = version
         report["version_check"] = "tested_target" if version == TESTED_VERSION else "different_version"
         auth = subprocess.run([resolved, "login", "status"], stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL, env=env, timeout=15, check=False)
