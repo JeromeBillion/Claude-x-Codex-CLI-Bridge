@@ -13,7 +13,9 @@ review locally. No API keys, private transcripts or review output are pushed.
 Codex works on `codex/*`; Claude works on `claude/*`. Never switch a shared
 checkout's branch while the other lane is editing. The branch prefix controls
 which lane receives a commit. `main` and COMMS-only commits do not queue a
-review. A repair commit queues a fresh review of that new commit.
+review. A repair commit queues a fresh review of that new commit. If several
+commits on one branch are still pending, older requests become `superseded`
+audit records and only the latest waits for a paid review.
 
 ## Queue commits
 

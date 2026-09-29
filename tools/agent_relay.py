@@ -94,11 +94,27 @@ def _replace_json(path: Path, data: dict) -> None:
 
 
 def enqueue(state: Path, request: Request) -> bool:
-    """One event per commit/target, even if a hook is invoked twice."""
+    """Keep an audit event per commit, but review only the latest queued branch head."""
     if any((state / folder / f"{request.key}.json").exists()
-           for folder in ("pending", "processing", "done", "failed")):
+           for folder in ("pending", "processing", "done", "failed", "superseded")):
         return False
-    return _write_new(state / "pending" / f"{request.key}.json", asdict(request))
+    if not _write_new(state / "pending" / f"{request.key}.json", asdict(request)):
+        return False
+    for older in (state / "pending").glob(f"*-{request.target}.json"):
+        if older.name == f"{request.key}.json":
+            continue
+        try:
+            previous = Request(**json.loads(older.read_text(encoding="utf-8")))
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+            continue
+        if previous.branch == request.branch:
+            destination = state / "superseded" / older.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                older.rename(destination)
+            except FileNotFoundError:
+                pass  # a watcher already claimed it
+    return True
 
 
 def claim(state: Path, target: str) -> tuple[Path, Request] | None:
@@ -292,7 +308,7 @@ def main() -> int:
     if args.command == "enqueue-commit":
         print(enqueue_head(workspace))
     elif args.command == "status":
-        for folder in ("pending", "processing", "done", "failed"):
+        for folder in ("pending", "processing", "done", "failed", "superseded"):
             print(f"{folder}: {len(list((state / folder).glob(f'*-{args.agent}.json')))}")
     elif args.command == "watch":
         if not 0.2 <= args.poll_seconds <= 60:
