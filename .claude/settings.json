@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -m tools.agent_mail inbox --agent claude --brief"
+          }
+        ]
+      }
+    ]
+  }
+}
