@@ -165,6 +165,10 @@ class SessionTests(FakeCliFixture):
         session = next(entry for entry in reversed(entries) if "--permission-prompt-tool" in entry["argv"])
         pos = session["argv"].index("--tools")
         self.assertEqual(session["argv"][pos + 1], "")
+        self.assertIn("--strict-mcp-config", session["argv"])
+        sources = session["argv"].index("--setting-sources")
+        self.assertEqual(session["argv"][sources + 1], "")
+        self.assertEqual(session["claudeai_mcp_disabled"], "false")
 
     def test_preflight_reports_plan_and_models_without_a_model_call(self) -> None:
         self.assertEqual(self.pre.account["plan"], "Claude Max")
