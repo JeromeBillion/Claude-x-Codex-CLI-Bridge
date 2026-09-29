@@ -36,6 +36,7 @@ class DesktopHost:
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
+        self._ui_thread = threading.current_thread()  # the only thread that may open dialogs directly
         self.root.title("Claude x Codex Desktop")
         self.root.geometry("1050x760")
         self.messages: queue.Queue[tuple[str, Any]] = queue.Queue()
@@ -239,9 +240,11 @@ class DesktopHost:
         selected_claude = self.claude_choice.get()
         if mode != "gpt_only" and self._claude_credit_billed(selected_claude) \
                 and self._new_claude_session(selected_claude) and self.claude_consent is None:
+            turns = ("\n\nIn collaboration this one session can run up to 3 Claude turns: role planning, "
+                     "a draft or review, and a final review." if mode == "collaboration" else "")
             if not messagebox.askyesno("Fable credits", f"{selected_claude} may consume usage credits in a headless "
-                                       "session, without Claude Code's own consent prompt.\n\nAllow it for this "
-                                       "one Claude session? A new or resumed session asks again."):
+                                       "session, without Claude Code's own consent prompt." + turns +
+                                       "\n\nAllow it for this one Claude session? A new or resumed session asks again."):
                 return
             self.claude_consent = CreditConsent(confirmed_by_user=True, model=selected_claude)
         if self.pending_handoff is not None:
@@ -498,7 +501,7 @@ class DesktopHost:
         if candidate is not None:
             draft.items = [item for item in draft.items if item.id != "reply"]  # sent verbatim instead
         # The Hand off button runs on the Tk thread, where waiting on the UI queue would deadlock.
-        on_ui_thread = threading.current_thread() is threading.main_thread()
+        on_ui_thread = getattr(self, "_ui_thread", None) is threading.current_thread()
         result = (self._dialog("handoff", (draft, candidate)) if on_ui_thread
                   else self._ask("handoff", (draft, candidate)))
         if result is None:

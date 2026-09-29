@@ -61,16 +61,21 @@ class HostConversationTests(unittest.TestCase):
         digest = hashlib.sha256(candidate.encode("utf-8")).hexdigest()
         prompts: list[str] = []
 
-        def codex_turn(text, *args):
-            turn = finished("codex", "thr_1", candidate if not prompts else f"APPROVE {digest}")
-            prompts.append(text)
-            self.host._remember(turn, "codex")
+        plan = '{"lead":"codex","final":"claude","reason":"Codex drafts"}'
+
+        def codex_turn(text, model, effort, approval, role):
+            reply = plan if role.startswith("planning") else candidate if role.startswith("draft") \
+                else f"APPROVE {digest}"
+            turn = finished("codex", "thr_1", reply)
+            prompts.append((role, text))
+            self.host._remember(turn, role)
             return turn
 
-        def claude_turn(text, *args):
-            prompts.append(text)
-            turn = finished("claude", "11111111-2222-3333-4444-555555555555", f"APPROVE {digest}")
-            self.host._remember(turn, "review")
+        def claude_turn(text, model, role, approval):
+            prompts.append((role, text))
+            reply = plan if role.startswith("planning") else f"APPROVE {digest}"
+            turn = finished("claude", "11111111-2222-3333-4444-555555555555", reply)
+            self.host._remember(turn, role)
             return turn
 
         def ask(kind, data):
@@ -81,21 +86,26 @@ class HostConversationTests(unittest.TestCase):
             return draft.finalize(draft.render()[0])
 
         self.host._codex_turn, self.host._claude_turn, self.host._ask = codex_turn, claude_turn, ask
-        self.on_worker("Fix rounding", "m", "", "sonnet", "ask_every_edit", "codex")
-        review_prompt = prompts[1]
+        self.on_worker("Fix rounding", "m", "", "sonnet", "ask_every_edit")
+        review_prompt = next(text for role, text in prompts
+                             if role == "final review, unapproved" and "Candidate answer" in text)
         self.assertIn(f"## Candidate answer (exact text under review)\n{candidate}", review_prompt)
         packet_part = review_prompt.split("## Candidate answer")[0]
         self.assertNotIn(SECRET, packet_part)  # the curated context is redacted
         kinds = [e.kind for e in self.host.conversation.entries]
         self.assertIn("handoff", kinds)
-        _, state = self.host.messages.get_nowait()
+        state = [item[1] for item in self.host.messages.queue if item[0] == "joint"][-1]
         self.assertEqual(state.state, "approved")
 
     def test_cancelled_handoff_leaves_the_candidate_unapproved(self) -> None:
-        self.host._codex_turn = lambda *a: finished("codex", "thr_1", "draft")
+        plan = '{"lead":"codex","final":"claude","reason":"Codex drafts"}'
+        self.host._codex_turn = lambda text, m, e, a, role: finished(
+            "codex", "thr_1", plan if role.startswith("planning") else "draft")
+        self.host._claude_turn = lambda text, m, role, a: finished(
+            "claude", "11111111-2222-3333-4444-555555555555", plan)
         self.host._ask = lambda kind, data: None
-        self.on_worker("p", "m", "", "sonnet", "ask_every_edit", "codex")
-        _, state = self.host.messages.get_nowait()
+        self.on_worker("p", "m", "", "sonnet", "ask_every_edit")
+        state = [item[1] for item in self.host.messages.queue if item[0] == "joint"][-1]
         self.assertEqual(state.state, "needs_user_decision")
         self.assertNotIn("handoff", [e.kind for e in self.host.conversation.entries])
 
