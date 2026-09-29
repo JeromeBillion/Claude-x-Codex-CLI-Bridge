@@ -14,6 +14,12 @@ SHA = "a" * 40
 
 
 class RelayTests(unittest.TestCase):
+    def test_post_commit_hook_keeps_unix_line_endings_for_git_bash(self):
+        hook = Path(__file__).resolve().parents[2] / ".githooks" / "post-commit"
+        data = hook.read_bytes()
+        self.assertTrue(data.startswith(b"#!/bin/sh\n"))
+        self.assertNotIn(b"\r\n", data)
+
     def request(self, commit: str = SHA) -> Request:
         return Request(commit, "codex", "claude", "codex/one", "2026-09-29T00:00:00Z")
 
