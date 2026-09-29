@@ -12,7 +12,8 @@ credentials. There is no new paid software or API-key setup.
 2. Extract `ClaudeCodexDesktop-alpha-<revision>.zip` to a normal local folder.
 3. Double-click `launch-desktop.cmd` inside `ClaudeCodexDesktop-alpha`, or run
    it from Command Prompt. It checks Python and opens the Tk desktop. Starting
-   the window makes no model call.
+   the window makes no model call. `launch-desktop.cmd --smoke` constructs and
+   closes the window without connecting to either CLI.
 4. Choose a disposable local coding project, select a provider mode, and click
    **Connect / refresh catalogs**. Confirm that account and model choices
    appear before sending any turn. The host must ask before credit-billed
