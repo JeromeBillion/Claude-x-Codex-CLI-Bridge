@@ -21,6 +21,7 @@ from tools.codex_app_server import AppServerTransport, CodexRuntime, ThreadStore
 from tools.codex_probe import safe_child_env
 from tools.desktop_state import BLOCKING_KINDS, Collaboration, TurnRecord, handoff_text
 from tools.runtime_events import Envelope
+from tools.capability_inventory import CapabilityRow, claude_capabilities, codex_capabilities
 
 
 def private_state_dir() -> Path:
@@ -70,6 +71,7 @@ class DesktopHost:
         self.project_label = ttk.Label(top, text="No project selected")
         self.project_label.grid(row=0, column=1, sticky="w", padx=10)
         ttk.Button(top, text="Connect / refresh catalogs", command=self._connect).grid(row=0, column=2)
+        ttk.Button(top, text="Inspect capabilities", command=self._inspect_capabilities).grid(row=0, column=3, padx=6)
         top.columnconfigure(1, weight=1)
 
         options = ttk.Frame(self.root, padding=(10, 0, 10, 8))
@@ -184,6 +186,42 @@ class DesktopHost:
         efforts = [value for value in efforts if isinstance(value, str)]
         self.effort_picker.configure(values=efforts)
         self.codex_effort.set(row.get("defaultReasoningEffort") if row.get("defaultReasoningEffort") in efforts else (efforts[0] if efforts else ""))
+
+    def _inspect_capabilities(self) -> None:
+        if self.workspace is None:
+            messagebox.showinfo("Project needed", "Choose a local project first.")
+            return
+        mode = self.mode.get()
+        if mode != "claude_only" and self.codex is None or mode != "gpt_only" and self.claude_preflight is None:
+            messagebox.showinfo("Connect needed", "Connect the selected provider CLI first.")
+            return
+        self.status.set("Reading installed CLI capabilities and MCP health. No model turn is being sent.")
+        def inspect() -> None:
+            rows: list[CapabilityRow] = []
+            if mode != "claude_only":
+                rows.extend(codex_capabilities(self.codex, self.workspace))
+            if mode != "gpt_only":
+                rows.extend(claude_capabilities(self.claude_preflight.executable))
+            self.messages.put(("capabilities", rows))
+        self._work(inspect)
+
+    def _show_capabilities(self, rows: list[CapabilityRow]) -> None:
+        window = tk.Toplevel(self.root)
+        window.title("Installed CLI capability inventory")
+        window.geometry("900x620")
+        ttk.Label(window, text="Reported by the installed CLIs. A listing or health check does not prove a tool call works. "
+                  "Provider approvals still apply.", wraplength=860).pack(anchor="w", padx=8, pady=8)
+        body = ttk.Frame(window, padding=(8, 0, 8, 8))
+        body.pack(fill="both", expand=True)
+        viewer = tk.Text(body, wrap="word")
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=viewer.yview)
+        viewer.configure(yscrollcommand=scrollbar.set)
+        viewer.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        for row in rows:
+            viewer.insert("end", f"{row.provider} | {row.kind} | {row.name} | {row.state} | {row.detail}\n")
+        viewer.configure(state="disabled")
+        ttk.Button(window, text="Close", command=window.destroy).pack(pady=8)
 
     def _ask(self, kind: str, data: Any) -> Any:
         signal = threading.Event()
@@ -479,6 +517,9 @@ class DesktopHost:
                         target = row.get("resolved_model")
                         target = f" -> {target}" if target not in (None, row["value"]) else ""
                         self._line(f"  {row['value']}{target} ({row.get('display_name')}){credit}\n")
+                elif kind == "capabilities":
+                    self._show_capabilities(data)
+                    self.status.set(f"Inspected {len(data)} local capability rows. Tool calls remain unverified.")
                 elif kind == "verdict":
                     turn, owner = data
                     self._line(f"\n[{owner} {'answer complete' if turn.ok else 'failed or incomplete: ' + str(turn.failure)}]\n")
