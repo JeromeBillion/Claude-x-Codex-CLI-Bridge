@@ -31,6 +31,12 @@ class StagedEditTests(unittest.TestCase):
         staged[0].apply()
         self.assertEqual(target.read_text(encoding="utf-8"), "first\nchanged\n")
 
+    def test_diff_remains_readable_without_final_newline(self):
+        target = self.root / "plain.txt"
+        target.write_text("before", encoding="utf-8")
+        edit = stage_proposals(self.root, proposal({"path": "plain.txt", "old_text": "before", "new_text": "after"}))[0]
+        self.assertIn("-before\n\\ No newline at end of file\n+after", edit.diff)
+
     def test_stale_file_cannot_be_overwritten_after_review(self):
         target = self.root / "app.py"
         target.write_text("before", encoding="utf-8")
