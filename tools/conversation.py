@@ -53,7 +53,10 @@ REDACTION_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("aws_access_key", re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")),
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
     ("slack_token", re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{10,}")),
-    ("stripe_key", re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}")),
+    ("stripe_key", re.compile(r"\b(?:(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|whsec_[A-Za-z0-9]{24,})")),
+    ("gitlab_token", re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}")),
+    ("npm_token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
+    ("huggingface_token", re.compile(r"\bhf_[A-Za-z0-9]{30,}")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")),
     ("bearer_token", re.compile(r"(?i)\b(?:authorization\s*[:=]\s*)?bearer\s+[A-Za-z0-9._~+/\-]{16,}=*")),
     ("url_credentials", re.compile(r"\b([a-z][a-z0-9+.\-]*://)[^/\s:@]+:[^/\s@]+@")),
@@ -151,7 +154,9 @@ class ConversationLog:
     @classmethod
     def start_new(cls, state_dir: Path, workspace: Path) -> "ConversationLog":
         folder = state_dir / "conversations" / workspace_key(workspace)
-        return cls(folder / f"{uuid.uuid4()}.jsonl", workspace.name)
+        log = cls(folder / f"{uuid.uuid4()}.jsonl", workspace.name)
+        log.append("note", {"event": "conversation_started"})
+        return log
 
     def _load(self) -> None:
         try:
@@ -187,8 +192,15 @@ class ConversationLog:
                           provider, session_ref)
             self.path.parent.mkdir(parents=True, exist_ok=True)
             new_file = not self.path.exists()
+            torn = False
+            if not new_file and self.path.stat().st_size:
+                with open(self.path, "rb") as existing:
+                    existing.seek(-1, os.SEEK_END)
+                    torn = existing.read(1) != b"\n"
             with open(self.path, "a", encoding="utf-8", newline="\n") as handle:
-                handle.write(entry.to_json() + "\n")
+                # A crash can leave a final line without its newline; close it off so the
+                # fragment stays one damaged line instead of swallowing this entry.
+                handle.write(("\n" if torn else "") + entry.to_json() + "\n")
                 handle.flush()
                 os.fsync(handle.fileno())
             if new_file and os.name != "nt":
@@ -312,6 +324,7 @@ class HandoffDraft:
     items: list[HandoffItem] = field(default_factory=list)
     reason: str = "switching provider"
     limit_chars: int = 8_000
+    rendered_counts: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.source not in PROVIDERS or self.target not in PROVIDERS or self.source == self.target:
@@ -354,17 +367,24 @@ class HandoffDraft:
             marker = f"\n\n[Handoff shortened to {self.limit_chars} characters; edit or omit items to fit.]"
             text = text[:self.limit_chars - len(marker)] + marker
             counts = {**counts, "shortened": 1}
+        self.rendered_counts = dict(counts)
         return text, counts
 
     def finalize(self, edited_packet: str, *, send_despite_findings: bool = False) -> tuple[str, dict[str, int]]:
         """Re-scan the text the user edited. Refuse if it reintroduced secrets, unless the user insists."""
-        clean, counts = redact(edited_packet)
-        if counts and not send_despite_findings:
-            raise HandoffNeedsReview(counts)
+        clean, found = redact(edited_packet)
+        if found and not send_despite_findings:
+            raise HandoffNeedsReview(found)
         final = edited_packet if send_despite_findings else clean
         if len(final) > self.limit_chars * 2:
             raise ValueError("handoff too long")
-        return final, counts
+        # The report covers what render() already removed plus anything found in the user's edit.
+        merged = dict(self.rendered_counts)
+        for category, count in found.items():
+            merged[category] = merged.get(category, 0) + count
+        if send_despite_findings and found:
+            merged["sent_unredacted_by_user"] = sum(found.values())
+        return final, merged
 
     def record(self, log: ConversationLog, packet: str, counts: dict[str, int]) -> Entry:
         return log.append("handoff", {

@@ -51,6 +51,8 @@ class DesktopHost:
         self.history: list[TurnRecord] = []
         # The one persistent, inspectable record of this workspace's conversation (VLI-160).
         self.conversation: ConversationLog | None = None
+        # A manual handoff waiting in the prompt box; recorded only when it is actually sent.
+        self.pending_handoff: HandoffDraft | None = None
         state = private_state_dir()
         self.codex_threads = ThreadStore(state / "codex-threads.json")
         # One list of folders trusted for automatic edits, shared by both providers.
@@ -242,6 +244,9 @@ class DesktopHost:
                                        "one Claude session? A new or resumed session asks again."):
                 return
             self.claude_consent = CreditConsent(confirmed_by_user=True, model=selected_claude)
+        if self.pending_handoff is not None:
+            if not self._dispatch_pending_handoff(prompt, mode):
+                return
         self.prompt.delete("1.0", "end")
         self._line(f"\nUSER ({mode}): {prompt}\n")
         if self.conversation is not None:
@@ -481,8 +486,12 @@ class DesktopHost:
             raise
 
     def _curated_handoff(self, source: str, target: str, summary: str, *, candidate: str | None = None,
-                         reason: str | None = None) -> str | None:
-        """Build the draft from the shared conversation, let the user curate it, record what is sent."""
+                         reason: str | None = None, record: bool = True) -> str | None:
+        """Build the draft from the shared conversation and let the user curate it.
+
+        Collaboration sends the packet immediately, so it is recorded here. A manual handoff
+        (record=False) is recorded by _send when, and exactly as, it is sent.
+        """
         assert self.conversation is not None
         draft = draft_handoff(self.conversation, source=source, target=target, user_summary=summary,
                               reason=reason)
@@ -495,8 +504,29 @@ class DesktopHost:
         if result is None:
             return None
         packet, counts = result
-        draft.record(self.conversation, packet, counts)
+        if record:
+            draft.record(self.conversation, packet, counts)
+        else:
+            self.pending_handoff = draft
         return packet
+
+    def _dispatch_pending_handoff(self, prompt: str, mode: str) -> bool:
+        """Scan the text the user is actually sending and record it. False keeps it unsent."""
+        draft, self.pending_handoff = self.pending_handoff, None
+        assert draft is not None and self.conversation is not None
+        target_modes = {"claude": ("claude_only", "collaboration"), "codex": ("gpt_only", "collaboration")}
+        if mode not in target_modes[draft.target]:
+            return True  # the user changed plan; this is an ordinary turn, not the handoff
+        try:
+            final, counts = draft.finalize(prompt)
+        except HandoffNeedsReview as needs:
+            if not messagebox.askyesno("Still looks secret", "The text you are sending still contains: "
+                                       f"{describe_redactions(needs.counts)}\n\nSend it anyway, unredacted?"):
+                self.pending_handoff = draft  # keep it pending so the next Send checks again
+                return False
+            final, counts = draft.finalize(prompt, send_despite_findings=True)
+        draft.record(self.conversation, final, counts)
+        return True
 
     def _handoff_manual(self) -> None:
         """Switch provider with a reviewed packet. Nothing is sent until the user presses Send."""
@@ -509,7 +539,7 @@ class DesktopHost:
         source = last.provider or "codex"
         target = "claude" if source == "codex" else "codex"
         summary = self.prompt.get("1.0", "end").strip() or "Continue this work from the handoff below."
-        packet = self._curated_handoff(source, target, summary)
+        packet = self._curated_handoff(source, target, summary, record=False)
         if packet is None:
             return
         self.mode.set("claude_only" if target == "claude" else "gpt_only")
@@ -595,6 +625,13 @@ class DesktopHost:
 
         def send() -> None:
             text = editor.get("1.0", "end").strip()
+            findings = redact(candidate)[1] if candidate is not None else {}
+            if findings and not messagebox.askyesno(
+                    "Candidate contains secrets",
+                    f"The candidate answer contains: {describe_redactions(findings)}\n\nIt is sent verbatim "
+                    f"to {draft.target.title()}, because both providers must approve its exact text. Send it "
+                    "anyway? No goes back to the review; Cancel leaves the draft unapproved.", parent=window):
+                return
             try:
                 result["value"] = draft.finalize(text)
             except HandoffNeedsReview as needs:

@@ -149,8 +149,39 @@ class TkHandoffDialogTests(unittest.TestCase):
         self.assertIn("Reason: the source provider's last turn failed", packet)
         self.assertNotIn("Patched with key", packet)  # the user left the reply out
         self.assertIn("Left out by the user: Codex's reply (tail)", packet)
-        self.assertEqual(self.host.conversation.entries[-1].kind, "handoff")
         self.assertFalse(self.host.busy)  # nothing was sent to a provider
+        # Not recorded until it is actually sent (Codex review finding 1).
+        self.assertNotEqual(self.host.conversation.entries[-1].kind, "handoff")
+        self.assertIsNotNone(self.host.pending_handoff)
+
+    def test_the_handoff_is_scanned_and_recorded_as_actually_sent(self) -> None:
+        self.press("Send reviewed handoff")
+        self.host._handoff_manual()
+        edited = self.host.prompt.get("1.0", "end").strip() + "\nplus " + "glpat-" + "S" * 24
+        with patch("tools.desktop.messagebox.askyesno", return_value=False):
+            self.assertFalse(self.host._dispatch_pending_handoff(edited, "claude_only"))
+        self.assertIsNotNone(self.host.pending_handoff)  # still pending: the next Send checks again
+        self.assertNotEqual(self.host.conversation.entries[-1].kind, "handoff")
+        clean = self.host.prompt.get("1.0", "end").strip() + "\nOnly look at rounding."
+        self.assertTrue(self.host._dispatch_pending_handoff(clean, "claude_only"))
+        entry = self.host.conversation.entries[-1]
+        self.assertEqual(entry.kind, "handoff")
+        self.assertTrue(entry.data["packet"].endswith("Only look at rounding."))  # exactly what was sent
+        self.assertEqual(entry.data["redactions"].get("anthropic_key"), 1)  # render counts are kept
+        self.assertIsNone(self.host.pending_handoff)
+
+    def test_a_candidate_with_secrets_needs_an_explicit_yes(self) -> None:
+        from tools.conversation import draft_handoff
+        draft = draft_handoff(self.host.conversation, source="codex", target="claude", user_summary="s")
+        candidate = "answer with " + SECRET
+        self.press("Send reviewed handoff")
+        self.root.after(900, lambda: [w.destroy() for w in self.root.winfo_children() if isinstance(w, tk.Toplevel)])
+        with patch("tools.desktop.messagebox.askyesno", return_value=False) as asked:
+            self.assertIsNone(self.host._handoff_dialog(draft, candidate))
+        self.assertIn("anthropic key", asked.call_args.args[1])
+        self.press("Send reviewed handoff")
+        with patch("tools.desktop.messagebox.askyesno", return_value=True):
+            self.assertIsNotNone(self.host._handoff_dialog(draft, candidate))
 
     def test_a_secret_pasted_into_the_final_text_is_caught_and_redacted_on_request(self) -> None:
         self.press("Send reviewed handoff", append="\nplus " + "ghp_" + "R" * 36)

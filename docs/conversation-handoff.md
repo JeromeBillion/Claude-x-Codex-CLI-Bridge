@@ -132,6 +132,26 @@ whole render.
   - a cancelled handoff stays unapproved
   - the real Tk dialog: manual handoff prefills without sending; a pasted token is caught and names only its category; the Conversation window lists native sessions per provider
 
+## Changes after Codex's review at `3320397`
+
+1. **A manual handoff is recorded only when it is sent.** `_send` re-scans the
+   text actually sent, including anything added after the dialog. If it looks
+   secret, `_send` asks; on No it keeps the handoff pending, so the next Send
+   checks again. The `handoff` entry holds exactly the text that was sent. If
+   the user switches to another plan, the text is sent as an ordinary turn.
+2. **A torn last line can no longer swallow the next entry.** `append()` first
+   closes it off with a newline. The fragment stays one damaged line, and later
+   entries survive a second reopen.
+3. **A collaboration candidate that scans positive needs an explicit yes**
+   before it is sent verbatim for exact approval. No goes back to the review,
+   and Cancel leaves the draft unapproved.
+4. **More token shapes are redacted:** Stripe `whsec_`, GitLab `glpat-`,
+   `npm_` and Hugging Face `hf_`. The recorded report keeps what the render
+   redacted, plus anything found in the user's edit. When the user sends
+   unredacted text anyway, the report also records `sent_unredacted_by_user`.
+5. **Start new is durable at once.** It writes a `conversation_started` note,
+   so reopening selects the new conversation.
+
 ## Open
 
 - Real turns have not been run through this path on Jerome's PC. That is part

@@ -25,6 +25,11 @@ SECRETS = {
     "slack_token": "xoxb-" + "1234567890-" + "F" * 12,
     "jwt": "eyJ" + "a" * 12 + ".eyJ" + "b" * 12 + "." + "c" * 12,
     "private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIE" + "x" * 40 + "\n-----END RSA PRIVATE KEY-----",
+    # Added after Codex's review of PR #20 (finding 4).
+    "stripe_key": "whsec_" + "G" * 32,
+    "gitlab_token": "glpat-" + "H" * 20,
+    "npm_token": "npm_" + "I" * 36,
+    "huggingface_token": "hf_" + "J" * 34,
 }
 
 
@@ -109,6 +114,24 @@ class ConversationLogTests(unittest.TestCase):
         reopened.record_user("two", mode="gpt_only", providers=["codex"])
         self.assertEqual(reopened.entries[-1].seq, 2)
 
+    def test_entries_after_a_torn_line_survive_a_second_reopen(self) -> None:
+        log = ConversationLog.open_latest(self.state, self.workspace)
+        log.record_user("first", mode="gpt_only", providers=["codex"])
+        with open(log.path, "a", encoding="utf-8") as handle:
+            handle.write('{"v":1,"seq":2,"kind":"tu')  # torn, no newline (Codex review finding 2)
+        again = ConversationLog(log.path, "ledger-app")
+        again.record_user("second", mode="gpt_only", providers=["codex"])
+        third = ConversationLog(log.path, "ledger-app")
+        self.assertEqual([e.data["text"] for e in third.entries], ["first", "second"])
+        self.assertEqual(third.damaged_lines, 1)
+
+    def test_start_new_is_durable_before_the_next_entry(self) -> None:
+        old = ConversationLog.open_latest(self.state, self.workspace)
+        old.record_user("old", mode="gpt_only", providers=["codex"])
+        new = ConversationLog.start_new(self.state, self.workspace)  # Codex review finding 5
+        self.assertTrue(new.path.exists())
+        self.assertEqual(ConversationLog.open_latest(self.state, self.workspace).path, new.path)
+
     def test_inspector_render_and_redacted_export(self) -> None:
         log = ConversationLog.open_latest(self.state, self.workspace)
         log.record_user("use key " + SECRETS["anthropic_key"], mode="claude_only", providers=["claude"])
@@ -140,6 +163,7 @@ class HandoffTests(unittest.TestCase):
         packet, counts = draft.render()
         self.assertNotIn(SECRETS["openai_key"], packet)
         self.assertEqual(counts, {"openai_key": 1})
+        self.assertEqual(draft.finalize(packet)[1], {"openai_key": 1})  # the render's finding is kept
         draft.set_included("reply", False)
         draft.set_included("diff:src/ledger.py", True)
         draft.edit("summary", "Only check the rounding change")
@@ -162,8 +186,9 @@ class HandoffTests(unittest.TestCase):
         self.assertNotIn(SECRETS["github_token"], str(caught.exception))
         final, counts = draft.finalize(pasted, send_despite_findings=True)  # the user insisted, knowingly
         self.assertIn(SECRETS["github_token"], final)
+        self.assertEqual(counts, {"github_token": 1, "sent_unredacted_by_user": 1})
         entry = draft.record(self.log, final, counts)
-        self.assertEqual(entry.data["redactions"], {"github_token": 1})
+        self.assertEqual(entry.data["redactions"]["github_token"], 1)
         self.assertEqual(self.log.entries[-1].kind, "handoff")
 
     def test_limit_failure_becomes_the_handoff_reason(self) -> None:
