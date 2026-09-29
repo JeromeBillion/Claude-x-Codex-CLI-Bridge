@@ -21,7 +21,7 @@ from tools.codex_app_server import AppServerTransport, CodexRuntime, ThreadStore
 from tools.codex_probe import safe_child_env
 from tools.desktop_state import BLOCKING_KINDS, Collaboration, TurnRecord, handoff_text
 from tools.runtime_events import Envelope
-from tools.staged_edits import EditProposalError, StagedEdit, stage_proposals
+from tools.staged_edits import EditProposalError, StagedEdit, is_agent_config_path, stage_proposals
 
 
 def private_state_dir() -> Path:
@@ -434,6 +434,11 @@ class DesktopHost:
             window.geometry("900x650")
             ttk.Label(window, text=f"Apply this one change to {edit.relative}? Review the complete diff.",
                       wraplength=850).pack(anchor="w", padx=8, pady=8)
+            if is_agent_config_path(edit.relative):
+                ttk.Label(window, text="AGENT CONFIGURATION WARNING: This file can change future hooks, "
+                          "MCP tools, permissions or CI actions. Apply only if you intend that change.",
+                          wraplength=850, foreground="#9a3412",
+                          font=("TkDefaultFont", 10, "bold")).pack(anchor="w", padx=8, pady=4)
             diff_frame = ttk.Frame(window)
             diff_frame.pack(fill="both", expand=True, padx=8)
             diff_view = tk.Text(diff_frame, wrap="none")

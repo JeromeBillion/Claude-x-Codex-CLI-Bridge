@@ -14,6 +14,8 @@ from pathlib import Path, PurePosixPath
 import re
 import tempfile
 
+from tools.approval_modes import PROTECTED_PARTS
+
 
 MAX_EDITS = 20
 MAX_TEXT = 256_000
@@ -23,6 +25,30 @@ _WINDOWS_DEVICE = re.compile(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$", 
 
 class EditProposalError(ValueError):
     pass
+
+
+def is_agent_config_path(relative: str) -> bool:
+    """Flag files that can change future agent, connector, hook or CI behavior."""
+    return any(part.lower() in PROTECTED_PARTS for part in PurePosixPath(relative).parts)
+
+
+def _replace_text(before: str, old: str, new: str | None) -> str | None:
+    # Git can check out a whole Windows text file with CRLF while a model emits
+    # LF. Normalize only an unambiguous CRLF file and a proposal with no CRs.
+    remainder = before.replace("\r\n", "")
+    crlf_only = "\r\n" in before and "\r" not in remainder and "\n" not in remainder
+    normalize = crlf_only and "\r" not in old and (new is None or "\r" not in new)
+    if "\r\n" in before and not crlf_only and "\n" in old and "\r" not in old:
+        raise EditProposalError("Mixed line endings require exact old_text")
+    search = before.replace("\r\n", "\n") if normalize else before
+    if search.count(old) != 1:
+        raise EditProposalError("old_text must match exactly once in the current file")
+    if new is None:
+        if old != search:
+            raise EditProposalError("Deletion must match the whole file")
+        return None
+    after = search.replace(old, new, 1)
+    return after.replace("\n", "\r\n") if normalize else after
 
 
 def _target(workspace: Path, relative: str) -> Path:
@@ -145,14 +171,10 @@ def stage_proposals(workspace: Path, response: str) -> list[StagedEdit]:
             if before is not None:
                 raise EditProposalError("Creation target already exists")
             after = new
-        elif before is None or before.count(old) != 1:
+        elif before is None:
             raise EditProposalError("old_text must match exactly once in the current file")
         else:
-            after = before.replace(old, new or "", 1)
-            if new is None and old != before:
-                raise EditProposalError("Deletion must match the whole file")
-            if new is None:
-                after = None
+            after = _replace_text(before, old, new)
         if after == before:
             raise EditProposalError("Edit has no effect")
         diff_lines = difflib.unified_diff(

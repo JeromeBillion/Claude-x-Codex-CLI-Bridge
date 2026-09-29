@@ -42,6 +42,12 @@ file after a separate user approval. It rejects links, missing/ambiguous old
 text, changed files, duplicate targets and oversized proposals. Unrecognized
 or malformed proposals are never applied. This currently supports UTF-8 text
 replacements, new files in existing directories and whole-file deletion; it
+accepts LF-only proposals against uniformly CRLF files while retaining CRLF in
+the result. Mixed-ending files require the proposal's exact line endings. The
+diff always shows the real before and after; edits to agent configuration paths
+show an extra warning before the user's per-file decision. In collaboration,
+the host stages the proposal again against the live file after both votes, so
+the diff presented for approval reflects any intervening workspace changes. It
 does not apply binary edits, directory creation or Codex edits from a
 collaboration review turn. In collaboration, proposals are validated before
 partner review and applied only after both providers approve the exact draft

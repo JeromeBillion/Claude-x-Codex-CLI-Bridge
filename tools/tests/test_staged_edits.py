@@ -5,13 +5,15 @@ import hashlib
 from pathlib import Path
 import queue
 import tempfile
+import tkinter as tk
+from tkinter import ttk
 import unittest
 from unittest.mock import Mock
 
 from tools.desktop import DesktopHost
 from tools.desktop_state import TurnRecord
 from tools.runtime_events import Envelope
-from tools.staged_edits import EditProposalError, stage_proposals
+from tools.staged_edits import EditProposalError, is_agent_config_path, stage_proposals
 
 
 def proposal(*edits):
@@ -32,6 +34,76 @@ class StagedEditTests(unittest.TestCase):
         self.assertIn("-second", staged[0].diff)
         staged[0].apply()
         self.assertEqual(target.read_text(encoding="utf-8"), "first\nchanged\n")
+
+    def test_multiline_lf_proposal_edits_crlf_file_and_preserves_crlf(self):
+        target = self.root / "app.py"
+        target.write_bytes(b"def f():\r\n    return 1\r\n")
+        edit = stage_proposals(self.root, proposal({"path": "app.py",
+            "old_text": "def f():\n    return 1\n", "new_text": "def f():\n    return 2\n"}))[0]
+        self.assertIn("-    return 1", edit.diff)
+        self.assertIn("+    return 2", edit.diff)
+        self.assertEqual(target.read_bytes(), b"def f():\r\n    return 1\r\n")
+        edit.apply()
+        self.assertEqual(target.read_bytes(), b"def f():\r\n    return 2\r\n")
+
+    def test_crlf_creation_and_whole_file_deletion(self):
+        create = stage_proposals(self.root, proposal({"path": "new.txt", "old_text": None,
+            "new_text": "one\r\ntwo\r\n"}))[0]
+        create.apply()
+        self.assertEqual((self.root / "new.txt").read_bytes(), b"one\r\ntwo\r\n")
+        delete = stage_proposals(self.root, proposal({"path": "new.txt",
+            "old_text": "one\ntwo\n", "new_text": None}))[0]
+        delete.apply()
+        self.assertFalse((self.root / "new.txt").exists())
+
+    def test_mixed_endings_require_exact_multiline_text(self):
+        target = self.root / "mixed.txt"
+        target.write_bytes(b"one\r\ntwo\n")
+        with self.assertRaisesRegex(EditProposalError, "Mixed line endings require exact"):
+            stage_proposals(self.root, proposal({"path": "mixed.txt",
+                "old_text": "one\ntwo\n", "new_text": "changed\n"}))
+        edit = stage_proposals(self.root, proposal({"path": "mixed.txt",
+            "old_text": "one\r\ntwo\n", "new_text": "changed\n"}))[0]
+        edit.apply()
+        self.assertEqual(target.read_bytes(), b"changed\n")
+
+    def test_crlf_normalized_match_still_requires_one_occurrence(self):
+        (self.root / "dup.txt").write_bytes(b"same\r\nnext\r\nsame\r\nnext\r\n")
+        with self.assertRaisesRegex(EditProposalError, "exactly once"):
+            stage_proposals(self.root, proposal({"path": "dup.txt",
+                "old_text": "same\nnext\n", "new_text": "changed\n"}))
+
+    def test_agent_configuration_paths_are_flagged(self):
+        for name in (".claude/settings.json", ".mcp.json", ".github/workflows/ci.yml",
+                     ".codex/config.toml", ".vscode/settings.json", ".husky/pre-commit"):
+            with self.subTest(name=name):
+                self.assertTrue(is_agent_config_path(name))
+        self.assertFalse(is_agent_config_path("src/settings.json"))
+
+    def test_edit_dialog_displays_agent_configuration_warning(self):
+        folder = self.root / ".claude"
+        folder.mkdir()
+        (folder / "settings.json").write_text("{}", encoding="utf-8")
+        edit = stage_proposals(self.root, proposal({"path": ".claude/settings.json",
+            "old_text": "{}", "new_text": '{"hooks": []}'}))[0]
+        try:
+            root = tk.Tk()
+        except tk.TclError:
+            self.skipTest("Tk display unavailable")
+        self.addCleanup(root.destroy)
+        root.withdraw()
+        host = DesktopHost.__new__(DesktopHost)
+        host.root = root
+        seen = []
+
+        def inspect_and_close():
+            window = next(w for w in root.winfo_children() if isinstance(w, tk.Toplevel))
+            seen.extend(w.cget("text") for w in window.winfo_children() if isinstance(w, ttk.Label))
+            window.destroy()
+
+        root.after(30, inspect_and_close)
+        self.assertFalse(host._dialog("edit_review", edit))
+        self.assertTrue(any("AGENT CONFIGURATION WARNING" in text for text in seen))
 
     def test_diff_remains_readable_without_final_newline(self):
         target = self.root / "plain.txt"
