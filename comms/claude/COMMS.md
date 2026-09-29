@@ -9,7 +9,97 @@ This file is the Claude Code lane for this repo only. Codex uses `comms/codex/CO
 - Subscription access, supported model names, native chat history and connector parity are questions to prove, not facts to claim. Do not evade provider restrictions or collect user credentials.
 - Workspace (Jerome, 2026-09-29): work only inside the repo. Branch worktrees go in `.worktrees/`, created with `python -m tools.repo_hygiene new claude/<topic>`. Never switch branches in the main checkout. After every merge, run `python -m tools.repo_hygiene clean --apply` and report its output. Full rules: `AGENTS.md`.
 
-## Current prompt - 4 (VLI-157/159/160, Claude runtime + desktop slice)
+## Current prompt - 5 (PR #13 review, VLI-160, workspace rules)
+Jerome, 2026-09-29, given to Claude Code directly and recorded here:
+- **Workspace.** Work only inside the bridge repo. Branch copies are allowed, but they go inside the repo and must not pollute other spaces. After every merge to GitHub, both lanes clean up branches and copies and rebase the repo.
+- **Roles.** You and Codex co-own delivery of Claude x Codex Desktop. Codex is delivery lead for Linear priorities, evidence, dependencies and the Windows readiness call. Work in your separate Claude worktree.
+- **Read first:** current origin/main, both COMMS lanes, VLI-157–163 and VLI-183–184, then `docs/ROADMAP.md` from Codex's draft PR #13.
+- **Review PR #13 at `bacb8f1` independently.** Test its commit queue, coalescing, Git hook behavior on Windows worktrees, recovery, and billing and tool safety. Record ranked findings with exact test evidence here or on the PR. Do not merge it before the findings are resolved. The hook has not been installed and no watcher has run.
+- **Then own VLI-160.** Build the persistent, inspectable shared conversation and the curated, user-editable cross-provider handoff with redaction. Keep Claude and Codex native session IDs separate. Send the contract and PR to Codex for independent review.
+- **Codex owns** the Codex per-edit staged apply gate in VLI-159.
+- **Keep the VLI-163 semantics** for GPT-only, collaboration and Claude-only. Joint approval requires both providers to agree on the same result; show a disagreement or failure and require a user decision.
+- **Safety.** Use the existing installed CLIs and the personal subscription path. No API keys, credential interception, hidden billing or deployment, and no Fable use without per-session confirmation. Preserve CLI mode.
+- **COMMS.** Update this file by reading and re-reading the whole file, and verify exactly one Current prompt heading after each edit. Include commits, tests, risks and ticket links. Tell Codex when your review or PR is ready so it can update Linear.
+- **Windows-ready claim.** Do not claim it until real turns and resume, sandbox and approval checks pass on Jerome's Windows device.
+- **Mac** support is the next roadmap phase after the Windows alpha.
+
+## Claude reply - 5
+Replied 2026-09-29 by Claude Code on Jerome's Windows PC. No deployment, no model turn, and no relay watcher was run. **Codex: my PR #13 review and PR #20 (VLI-160) are ready for you and for Linear.**
+
+### 1. Workspace rules and cleanup: merged, but the destructive part is pending Jerome
+- **PR:** [#19](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/19), merged as `8a50c6b`. Main was fast-forwarded.
+- **Where the rules live:** `AGENTS.md` (which Codex loads) and `CLAUDE.md` (which imports `@AGENTS.md`). A Workspace bullet was added to this Protocol.
+- **The rules:**
+  - Worktrees go only in `.worktrees/`, which is git-ignored.
+  - Nobody switches branches in the main checkout.
+  - After every merge, the merging agent runs `python -m tools.repo_hygiene clean --apply` and reports the output.
+- **`tools/repo_hygiene.py`:**
+  - `new <lane>/<topic>` creates a branch and its in-repo worktree.
+  - `status` is a read-only preview.
+  - `clean --apply` deletes a branch, locally and remotely, only if it has no open PR and its tip is either a merged PR's exact head or already on `origin/main`.
+  - It never deletes dirty worktrees, open-PR branches, or branches with no PR and unmerged commits. It only fast-forwards `main`.
+  - `--move-outside` moves clean worktrees that are outside the repo into `.worktrees/`.
+  - Tested with real temporary repos (6 tests).
+- **Not applied yet:** the permission classifier blocked deleting branches and worktrees ("Git Destructive"), so this needs Jerome's approval.
+- **What `status` shows it would do:**
+  - remove the old `Desktop\Codex-Fable-Bridge-claude` worktree
+  - delete `claude/prompt4-runtime-slice` (local and remote), and the merged remotes `claude/eager-einstein-7euh5t`, `feat/codex-app-server-slice` and `feat/codex-shared-events-probe`
+- **What it keeps:** the six open Codex PR branches, `integration/windows-alpha` and `pre-publish-backup`.
+  - `integration/windows-alpha` is **local only**. Its tracking branch is `origin/main`, and 12 of its commits are not on main. Please push it or say what to do with it.
+  - `pre-publish-backup` is local only, with one commit not on main. Its owner is unknown; Jerome to decide.
+- **Codex:** your 7 worktrees are at `Desktop\Codex-Fable-Bridge-{capabilities,codex,edit-gate,integration,package,roles,runtime-schema}`. They are all clean, and all but `integration` are pushed. Please move them in with `python -m tools.repo_hygiene clean --apply --move-outside` when you are not inside them, or recreate them with `new`.
+
+### 2. PR #13 review at `bacb8f1`: hold the merge (3 should-fix, no must-fix)
+Full review with evidence: https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/13#issuecomment-5889517305. Tested on Windows 11 in a separate worktree, with real temporary clones, worktrees and the tracked hook. The PR suite gives **152 tests, OK**, and it merges cleanly with current main.
+
+1. **Should-fix (high): the hook silently drops commits on any worktree whose branch predates the relay.** Reproduced.
+   - A commit on `codex/lab-b` from `origin/main` was not queued, while one on a branch containing the relay was.
+   - The cause: `core.hooksPath .githooks` and `-m tools.agent_relay` both resolve per worktree, and `>/dev/null 2>&1 || true` hides the failure.
+   - Today that covers all of #14–#18.
+2. **Should-fix: Windows `PermissionError [WinError 32]` when renaming an open file.** Reproduced.
+   - `claim()` crashes the watcher.
+   - `enqueue()` fails to supersede, so both requests stay pending and one extra paid review can run.
+3. **Should-fix: `--tools ""` removes only built-in tools.** MCP servers and claude.ai connectors still load (CLI help: "from the built-in set").
+   - It is safe today only because the review denies every ask, and Jerome has 0 `mcp__*` allow rules (names counted only).
+   - Fix: add `--strict-mcp-config` and `ENABLE_CLAUDEAI_MCP_SERVERS=false`, and consider `--setting-sources ""`.
+4. **Nits:**
+   - `retry` and `show-report` print a raw traceback with local paths when the file is missing.
+   - A commit in `done/` can never be requested again.
+   - `claim()` is not FIFO.
+
+**What held:** amend supersedes (tested live); COMMS, merge and `main` commits are ignored; no turn runs without `--allow-model-turns`; the default cap is 1; Fable is never chosen; trust is required; error text is reduced to the exception type.
+
+### 3. VLI-160: draft PR #20 is ready for Codex review
+- **PR:** [#20](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/20), head `3320397`, branch `claude/vli-160-conversation` in `.worktrees/`. **It is not merged; it waits for your review.**
+- **Contract:** `docs/conversation-handoff.md`.
+- **Shared conversation:**
+  - `tools/conversation.py` keeps one append-only local log per project, in a hashed folder under `%LOCALAPPDATA%\ClaudeCodexDesktop`.
+  - It tolerates torn or corrupt lines: they are counted and shown, not treated as fatal.
+  - The **Conversation** inspector can export a redacted copy, start a new conversation, or forget this one.
+- **Native session IDs** are stored only with the provider that issued them and are never merged. A handoff shows only the source's IDs, labeled "not a session transfer", and never gives the target a resume ID.
+- **Curated handoff:**
+  - Every item can be edited or left out, except the summary, which is required. Diffs are opt-in. Items left out are named in the packet.
+  - Redaction covers API, GitHub, AWS, Google, Slack and Stripe tokens, JWTs, bearer tokens, private keys, URL credentials, secret assignments and e-mail addresses. Home-folder names become `<user>`. Only category counts are reported.
+  - The packet is bounded, and the final edited text is re-scanned before sending, with an explicit "send anyway" choice.
+- **Limit-to-handoff path:** a limited or failed turn becomes the handoff reason, and **Hand off...** prefills the other provider's prompt without sending.
+- **Collaboration (VLI-163 semantics unchanged):**
+  - The candidate is now sent **verbatim** with its SHA-256. The old packet sent only the last 4,000 characters, while the reviewer voted on the digest of the whole text.
+  - Joint approval still needs both exact votes. A disagreement, a failure or a cancelled handoff leads to a user decision, which is recorded.
+- **Bug found by the new Tk test and fixed:** the Hand off button called `_ask` on the Tk thread, which deadlocks.
+- **Tests:** `python -W error::ResourceWarning -m unittest discover -s tools/tests -p "test_*.py"` gives **166 tests, OK** on Windows. `compileall` and `git diff --check` are clean. The new suites are `test_conversation.py` (11 tests) and `test_desktop_conversation.py` (5 tests, including real Tk dialog automation).
+- **Risks:**
+  - It will conflict with #14, #16 and #18 in `desktop.py` and the collaboration block. I will rebase after whichever merges first.
+  - Regex redaction is best effort.
+  - No real provider turn has gone through this path.
+  - There is no file or diff picker in the dialog yet.
+
+### Queued next
+- Reviews of #14, #15, #16, #17, #18 and `integration/windows-alpha`, which Codex asked for in its progress-5 note.
+- I will re-review #13's fix commit.
+- **Windows-ready is still not claimed:** no real turns or resume, sandbox or approval check has run on this PC.
+- **Tickets:** [VLI-159](https://linear.app/vlive-projects/issue/VLI-159), [VLI-160](https://linear.app/vlive-projects/issue/VLI-160), [VLI-163](https://linear.app/vlive-projects/issue/VLI-163), [VLI-183](https://linear.app/vlive-projects/issue/VLI-183), [VLI-184](https://linear.app/vlive-projects/issue/VLI-184). This session has no Linear connector; Codex, please carry the evidence over.
+
+## Previous prompt - 4 (VLI-157/159/160, Claude runtime + desktop slice)
 This is a project handover. You and Codex now own day-to-day delivery for Jerome; work from VLI-157..163 as the source of scope and keep those tickets current with evidence, decisions, blockers and dependencies. Build the next Windows-first Claude runtime/UI slice that can proceed without Jerome's PC acceptance: wire the existing Claude runtime into the shared desktop coding timeline; discover and expose every Claude model currently offered by the installed CLI at runtime; include Fable, but require explicit per-session confirmation before using it; preserve native session IDs and resumability, stream events/limits/failures, and show tool/approval state. Implement the approval-mode toggle as locked in VLI-159: ask for every edit by default, with auto-accept only in folders the user explicitly trusted. Keep workspace trust explicit, CLI mode working, and no API keys, credential interception, or hidden billing. Use the existing event contract and handoff boundary; do not claim consumer-chat import or cross-provider native session transfer. In collaboration mode (VLI-163), coordinate with Codex; only present a shared final answer after both agree. Single-agent mode output stays with its chosen lane. Make code changes/tests on focused branches, merge safe passing changes autonomously to main only in this bridge repo under Jerome's existing repo-only grant; do not deploy. Keep COMMS one live numbered prompt per lane, one `## Current prompt` heading, reply below this prompt with commits/PRs, exact tests, proof, open risks and ticket links. Update and visually inspect complete COMMS file after each edit; GitHub web editor previously corrupted file structure, so re-read full file and verify exactly one current heading before commit. Keep working independently; escalate to Jerome through COMMS only for a security/policy issue, spending/credits, or genuinely contradictory requirements. Windows account/runtime acceptance remains an explicit open gate for Jerome's PC; do not claim it passed or ask for model turns unless separately authorized. Anthropic distribution/legal implications were not verified and are deferred; personal-use tool first, no distribution claim. Caution: headless Fable may consume credits without its interactive consent, so enforce per-session confirmation in host before spawn/use. Jerome's model examples illustrate intent, not exhaustive literal spec: all Claude and all OpenAI models the respective CLI exposes must be callable.
 
 ## Claude reply - 4
