@@ -33,7 +33,8 @@ and `credit_billed`; `models_report` is the redacted form. The host then calls
   auto-accepted one is followed by `approval_decision` with
   `by: "auto_trusted"`, and a user answer produces `by: "user"`.
 
-`ask_every_edit` uses Codex `readOnly` with `onRequest`. For a GPT-only answer,
+`ask_every_edit` uses Codex `readOnly` with `onRequest`. For a GPT-only answer
+or a Codex-led collaboration draft,
 the host asks Codex to return any desired file changes in a single
 `codex-edits` JSON block. `tools/staged_edits.py` validates exact relative
 paths and current text, shows a full diff for each file, and applies only that
@@ -42,7 +43,9 @@ text, changed files, duplicate targets and oversized proposals. Unrecognized
 or malformed proposals are never applied. This currently supports UTF-8 text
 replacements, new files in existing directories and whole-file deletion; it
 does not apply binary edits, directory creation or Codex edits from a
-collaboration review turn. Those cases require the user to choose trusted auto
+collaboration review turn. In collaboration, proposals are validated before
+partner review and applied only after both providers approve the exact draft
+and the user approves each file. Unsupported cases require trusted auto
 mode or handle them outside the host. Codex command/file escalation in default
 mode remains displayed and declined. In trusted auto mode,
 a file or command approval issued by App Server blocks the turn and requires

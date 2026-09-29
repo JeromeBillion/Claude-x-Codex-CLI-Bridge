@@ -1,6 +1,7 @@
 """Focused tests for the host-owned Codex file-edit boundary."""
 
 import json
+import hashlib
 from pathlib import Path
 import queue
 import tempfile
@@ -9,6 +10,7 @@ from unittest.mock import Mock
 
 from tools.desktop import DesktopHost
 from tools.desktop_state import TurnRecord
+from tools.runtime_events import Envelope
 from tools.staged_edits import EditProposalError, stage_proposals
 
 
@@ -99,6 +101,76 @@ class StagedEditTests(unittest.TestCase):
         self.assertEqual(host._ask.call_count, 2)
         self.assertEqual((self.root / "one.txt").read_text(encoding="utf-8"), "one")
         self.assertEqual((self.root / "two.txt").read_text(encoding="utf-8"), "changed")
+
+    def test_collaboration_waits_for_both_votes_and_file_consent(self):
+        target = self.root / "app.py"
+        target.write_text("before", encoding="utf-8")
+        candidate = proposal({"path": "app.py", "old_text": "before", "new_text": "after"})
+        digest = hashlib.sha256(candidate.encode("utf-8")).hexdigest()
+        host = DesktopHost.__new__(DesktopHost)
+        host.workspace = self.root
+        host.messages = queue.Queue()
+        turns = []
+
+        def finished(provider, text):
+            turn = TurnRecord(provider, "menu-model", text=text)
+            turn.append(Envelope(provider, "native", "turn_finished", {"ok": True}))
+            return turn
+
+        def codex_turn(_text, _model, _effort, _approval, role):
+            turns.append(("codex", role))
+            if role.startswith("planning"):
+                answer = '{"lead":"codex","final":"codex","reason":"code task"}'
+            else:
+                answer = candidate if role.startswith("draft") else f"APPROVE {digest}"
+            return finished("codex", answer)
+
+        def claude_turn(_text, _model, role, _approval):
+            turns.append(("claude", role))
+            self.assertEqual(target.read_text(encoding="utf-8"), "before")
+            return finished("claude", '{"lead":"codex","final":"codex","reason":"code task"}'
+                            if role.startswith("planning") else f"APPROVE {digest}")
+
+        def ask(kind, value):
+            if kind == "handoff":
+                return value
+            self.assertEqual(kind, "edit_review")
+            self.assertEqual(target.read_text(encoding="utf-8"), "before")
+            self.assertIn("-before", value.diff)
+            self.assertEqual(turns[-1], ("codex", "final review, unapproved"))
+            return True
+
+        host._codex_turn = codex_turn
+        host._claude_turn = claude_turn
+        host._ask = ask
+        host._collaborate("change app.py", "codex-model", "high", "claude-model", "ask_every_edit")
+        self.assertEqual(target.read_text(encoding="utf-8"), "after")
+        joint = [item[1] for item in host.messages.queue if item[0] == "joint"][-1]
+        self.assertEqual(joint.joint_answer, candidate)
+
+    def test_collaboration_rejection_never_prompts_to_apply(self):
+        target = self.root / "app.py"
+        target.write_text("before", encoding="utf-8")
+        candidate = proposal({"path": "app.py", "old_text": "before", "new_text": "after"})
+        host = DesktopHost.__new__(DesktopHost)
+        host.workspace = self.root
+        host.messages = queue.Queue()
+
+        def finished(provider, text):
+            turn = TurnRecord(provider, "menu-model", text=text)
+            turn.append(Envelope(provider, "native", "turn_finished", {"ok": True}))
+            return turn
+
+        plan = '{"lead":"codex","final":"codex","reason":"code task"}'
+        host._codex_turn = lambda _text, _model, _effort, _approval, role: finished(
+            "codex", plan if role.startswith("planning") else candidate)
+        host._claude_turn = lambda _text, _model, role, _approval: finished(
+            "claude", plan if role.startswith("planning") else "DISAGREE")
+        host._ask = lambda kind, value: value if kind == "handoff" else self.fail("Edit dialog opened before agreement")
+        host._collaborate("change app.py", "codex-model", "high", "claude-model", "ask_every_edit")
+        self.assertEqual(target.read_text(encoding="utf-8"), "before")
+        joint = [item[1] for item in host.messages.queue if item[0] == "joint"][-1]
+        self.assertIsNone(joint.joint_answer)
 
 
 if __name__ == "__main__":
