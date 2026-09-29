@@ -10,6 +10,7 @@ from tkinter import ttk
 import unittest
 from unittest.mock import Mock
 
+from tools.conversation import ConversationLog
 from tools.desktop import DesktopHost
 from tools.desktop_state import TurnRecord
 from tools.runtime_events import Envelope
@@ -212,9 +213,11 @@ class StagedEditTests(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), "before")
             return finished("claude", plan if role.startswith("planning") else f"APPROVE {digest}")
 
+        host.conversation = ConversationLog(self.root / ".conversation.jsonl", "ws")  # VLI-160
+
         def ask(kind, value):
-            if kind == "handoff":
-                return value
+            if kind == "handoff":  # VLI-160: accept the curated draft as rendered
+                return value[0].finalize(value[0].render()[0])
             self.assertEqual(kind, "edit_review")
             self.assertEqual(target.read_text(encoding="utf-8"), "before")
             self.assertIn("-before", value.diff)
@@ -247,7 +250,9 @@ class StagedEditTests(unittest.TestCase):
             "codex", plan if role.startswith("planning") else candidate)
         host._claude_turn = lambda _text, _model, role, _approval: finished(
             "claude", plan if role.startswith("planning") else "DISAGREE")
-        host._ask = lambda kind, value: value if kind == "handoff" else self.fail("Edit dialog opened before agreement")
+        host.conversation = ConversationLog(self.root / ".conversation.jsonl", "ws")  # VLI-160
+        host._ask = lambda kind, value: (value[0].finalize(value[0].render()[0]) if kind == "handoff"
+                                         else self.fail("Edit dialog opened before agreement"))
         host._collaborate("change app.py", "codex-model", "high", "claude-model", "ask_every_edit")
         self.assertEqual(target.read_text(encoding="utf-8"), "before")
         joint = [item[1] for item in host.messages.queue if item[0] == "joint"][-1]

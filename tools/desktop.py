@@ -19,8 +19,9 @@ from tools.claude_runtime import (ClaudeSession, CreditConsent, Preflight, Runti
                                   is_credit_billed, preflight)
 from tools.codex_app_server import AppServerTransport, CodexRuntime, ThreadStore, TrustedFolderStore
 from tools.codex_probe import safe_child_env
-from tools.desktop_state import (BLOCKING_KINDS, Collaboration, RolePlan, TurnRecord,
-                                 handoff_text, parse_role_plan)
+from tools.conversation import (ConversationLog, HandoffDraft, HandoffNeedsReview, describe_redactions,
+                                draft_handoff, redact)
+from tools.desktop_state import BLOCKING_KINDS, Collaboration, RolePlan, TurnRecord, parse_role_plan
 from tools.runtime_events import Envelope
 from tools.staged_edits import EditProposalError, StagedEdit, is_agent_config_path, stage_proposals
 
@@ -35,6 +36,7 @@ class DesktopHost:
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
+        self._ui_thread = threading.current_thread()  # the only thread that may open dialogs directly
         self.root.title("Claude x Codex Desktop")
         self.root.geometry("1050x760")
         self.messages: queue.Queue[tuple[str, Any]] = queue.Queue()
@@ -48,6 +50,10 @@ class DesktopHost:
         # The user's yes for credit-billed Claude models, consumed by the next new Claude session.
         self.claude_consent: CreditConsent | None = None
         self.history: list[TurnRecord] = []
+        # The one persistent, inspectable record of this workspace's conversation (VLI-160).
+        self.conversation: ConversationLog | None = None
+        # A manual handoff waiting in the prompt box; recorded only when it is actually sent.
+        self.pending_handoff: HandoffDraft | None = None
         state = private_state_dir()
         self.codex_threads = ThreadStore(state / "codex-threads.json")
         # One list of folders trusted for automatic edits, shared by both providers.
@@ -61,7 +67,7 @@ class DesktopHost:
         self.claude_choice = tk.StringVar()
         self.status = tk.StringVar(value="Select a local project. No model turn starts on Connect.")
         self._build()
-        self.root.after(50, self._drain)
+        self._drain_job = self.root.after(50, self._drain)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
 
     def _build(self) -> None:
@@ -112,6 +118,8 @@ class DesktopHost:
         self.send_button = ttk.Button(buttons, text="Send turn", command=self._send)
         self.send_button.pack(fill="x")
         ttk.Button(buttons, text="Interrupt", command=self._interrupt).pack(fill="x")
+        ttk.Button(buttons, text="Hand off...", command=self._handoff_manual).pack(fill="x")
+        ttk.Button(buttons, text="Conversation", command=self._show_conversation).pack(fill="x")
         ttk.Label(self.root, textvariable=self.status, padding=(10, 0, 10, 8)).pack(anchor="w")
 
     def _line(self, value: str) -> None:
@@ -133,6 +141,12 @@ class DesktopHost:
             self.claude_consent = None
         self.workspace = workspace
         self.project_label.configure(text=str(workspace))
+        self.conversation = ConversationLog.open_latest(private_state_dir(), workspace)
+        if self.conversation.entries:
+            sessions = self.conversation.native_sessions()
+            self._line(f"\nReopened this project's conversation: {len(self.conversation.entries)} entries "
+                       f"(Claude sessions {len(sessions['claude'])}, Codex threads {len(sessions['codex'])}). "
+                       "Use Conversation to read it.\n")
 
     def _work(self, action: Callable[[], None]) -> None:
         if self.busy:
@@ -226,13 +240,21 @@ class DesktopHost:
         selected_claude = self.claude_choice.get()
         if mode != "gpt_only" and self._claude_credit_billed(selected_claude) \
                 and self._new_claude_session(selected_claude) and self.claude_consent is None:
+            turns = ("\n\nIn collaboration this one session can run up to 3 Claude turns: role planning, "
+                     "a draft or review, and a final review." if mode == "collaboration" else "")
             if not messagebox.askyesno("Fable credits", f"{selected_claude} may consume usage credits in a headless "
-                                       "session, without Claude Code's own consent prompt.\n\nAllow it for this "
-                                       "one Claude session? A new or resumed session asks again."):
+                                       "session, without Claude Code's own consent prompt." + turns +
+                                       "\n\nAllow it for this one Claude session? A new or resumed session asks again."):
                 return
             self.claude_consent = CreditConsent(confirmed_by_user=True, model=selected_claude)
+        if self.pending_handoff is not None:
+            if not self._dispatch_pending_handoff(prompt, mode):
+                return
         self.prompt.delete("1.0", "end")
         self._line(f"\nUSER ({mode}): {prompt}\n")
+        if self.conversation is not None:
+            self.conversation.record_user(prompt, mode=mode, providers={
+                "gpt_only": ["codex"], "claude_only": ["claude"]}.get(mode, ["claude", "codex"]))
         model, effort = self.codex_model.get(), self.codex_effort.get()
         self._work(lambda: self._run_turn(mode, approval, prompt, model, effort, selected_claude))
 
@@ -301,6 +323,7 @@ class DesktopHost:
                         runtime.interrupt()
                     except Exception:
                         pass
+                self._remember(turn, role)
                 self.history.append(turn)
                 if turn.ok and approval == "ask_every_edit" and role == "answer":
                     self._review_codex_edits(turn)
@@ -368,8 +391,13 @@ class DesktopHost:
                 session.answer_approval(str(event.data["request_id"]), allow=decision is True)
             if turn.finished and event.kind == "runtime_error":
                 session.fail_turn()  # interrupt, and decline any request still in flight
+        self._remember(turn, role)
         self.history.append(turn)
         return turn
+
+    def _remember(self, turn: TurnRecord, role: str) -> None:
+        if self.conversation is not None:
+            self.conversation.record_turn(turn, role=role)
 
     def _collaborate(self, prompt: str, model: str, effort: str,
                      claude_model: str, approval: str) -> None:
@@ -428,8 +456,7 @@ class DesktopHost:
                     self.messages.put(("joint", state))
                     return
             state.propose(lead.text, lead_provider)
-            packet = handoff_text(self.workspace.name, lead, prompt)
-            packet = self._ask("handoff", packet)
+            packet = self._curated_handoff(lead_provider, partner_provider, prompt, candidate=state.candidate)
             if packet is None:
                 state.unavailable()
                 self.messages.put(("joint", state))
@@ -437,8 +464,12 @@ class DesktopHost:
             digest = hashlib.sha256(state.candidate.encode("utf-8")).hexdigest()
             for reviewer in ((partner_provider, lead_provider) if final_provider == lead_provider
                              else (lead_provider, partner_provider)):
+                # The partner gets the curated context plus the candidate verbatim: both providers
+                # approve its exact text, so it can be neither trimmed nor redacted (VLI-160).
                 review_text = (f"Review this proposed answer and workspace evidence. The handoff is user-approved context, "
-                               f"not native session transfer.\n\n{packet}\n\n" if reviewer == partner_provider
+                               f"not native session transfer.\n\n{packet}\n\n"
+                               f"## Candidate answer (exact text under review)\n{state.candidate}\n\n"
+                               if reviewer == partner_provider
                                else "Review your earlier candidate against the workspace evidence again.\n\n")
                 review_text += (f"Candidate SHA-256: {digest}\nReply exactly APPROVE {digest} only if you agree "
                                 "this exact candidate is the best answer; otherwise reply DISAGREE and explain why. "
@@ -456,6 +487,174 @@ class DesktopHost:
             state.unavailable()
             self.messages.put(("joint", state))
             raise
+
+    def _curated_handoff(self, source: str, target: str, summary: str, *, candidate: str | None = None,
+                         reason: str | None = None, record: bool = True) -> str | None:
+        """Build the draft from the shared conversation and let the user curate it.
+
+        Collaboration sends the packet immediately, so it is recorded here. A manual handoff
+        (record=False) is recorded by _send when, and exactly as, it is sent.
+        """
+        assert self.conversation is not None
+        draft = draft_handoff(self.conversation, source=source, target=target, user_summary=summary,
+                              reason=reason)
+        if candidate is not None:
+            draft.items = [item for item in draft.items if item.id != "reply"]  # sent verbatim instead
+        # The Hand off button runs on the Tk thread, where waiting on the UI queue would deadlock.
+        on_ui_thread = getattr(self, "_ui_thread", None) is threading.current_thread()
+        result = (self._dialog("handoff", (draft, candidate)) if on_ui_thread
+                  else self._ask("handoff", (draft, candidate)))
+        if result is None:
+            return None
+        packet, counts = result
+        if record:
+            draft.record(self.conversation, packet, counts)
+        else:
+            self.pending_handoff = draft
+        return packet
+
+    def _dispatch_pending_handoff(self, prompt: str, mode: str) -> bool:
+        """Scan the text the user is actually sending and record it. False keeps it unsent."""
+        draft, self.pending_handoff = self.pending_handoff, None
+        assert draft is not None and self.conversation is not None
+        target_modes = {"claude": ("claude_only", "collaboration"), "codex": ("gpt_only", "collaboration")}
+        if mode not in target_modes[draft.target]:
+            return True  # the user changed plan; this is an ordinary turn, not the handoff
+        try:
+            final, counts = draft.finalize(prompt)
+        except HandoffNeedsReview as needs:
+            if not messagebox.askyesno("Still looks secret", "The text you are sending still contains: "
+                                       f"{describe_redactions(needs.counts)}\n\nSend it anyway, unredacted?"):
+                self.pending_handoff = draft  # keep it pending so the next Send checks again
+                return False
+            final, counts = draft.finalize(prompt, send_despite_findings=True)
+        draft.record(self.conversation, final, counts)
+        return True
+
+    def _handoff_manual(self) -> None:
+        """Switch provider with a reviewed packet. Nothing is sent until the user presses Send."""
+        if self.busy or self.conversation is None:
+            return
+        last = self.conversation.last_turn()
+        if last is None:
+            messagebox.showinfo("Nothing to hand off", "Run a turn first; the handoff is built from it.")
+            return
+        source = last.provider or "codex"
+        target = "claude" if source == "codex" else "codex"
+        summary = self.prompt.get("1.0", "end").strip() or "Continue this work from the handoff below."
+        packet = self._curated_handoff(source, target, summary, record=False)
+        if packet is None:
+            return
+        self.mode.set("claude_only" if target == "claude" else "gpt_only")
+        self.prompt.delete("1.0", "end")
+        self.prompt.insert("1.0", packet)
+        self.status.set(f"Handoff ready for a new {target.title()} conversation. Review it and press Send turn.")
+
+    def _show_conversation(self) -> None:
+        if self.conversation is None:
+            messagebox.showinfo("No project", "Choose a project first.")
+            return
+        log = self.conversation
+        window = tk.Toplevel(self.root)
+        window.title("Shared conversation (local, private)")
+        window.geometry("820x600")
+        ttk.Label(window, text="Stored only on this PC. Claude and Codex keep their own native sessions; "
+                               "this record is the desktop's own.", wraplength=780).pack(anchor="w", padx=8, pady=4)
+        view = tk.Text(window, wrap="word")
+        view.insert("1.0", log.render())
+        view.configure(state="disabled")
+        view.pack(fill="both", expand=True, padx=8)
+        row = ttk.Frame(window)
+        row.pack(fill="x", padx=8, pady=6)
+
+        def export() -> None:
+            target = filedialog.asksaveasfilename(parent=window, title="Export redacted conversation",
+                                                  defaultextension=".txt", filetypes=[("Text", "*.txt")])
+            if target:
+                Path(target).write_text(log.render(redacted=True), encoding="utf-8")
+
+        def start_new() -> None:
+            if self.workspace is not None:
+                self.conversation = ConversationLog.start_new(private_state_dir(), self.workspace)
+                window.destroy()
+                self._line("\n[Started a new shared conversation for this project.]\n")
+
+        def forget() -> None:
+            if messagebox.askyesno("Forget conversation", "Delete this conversation's local record? "
+                                   "Provider-native sessions are not affected.", parent=window):
+                log.forget()
+                window.destroy()
+
+        ttk.Button(row, text="Export redacted copy...", command=export).pack(side="left")
+        ttk.Button(row, text="Start new conversation", command=start_new).pack(side="left", padx=6)
+        ttk.Button(row, text="Forget this conversation", command=forget).pack(side="right")
+
+    def _handoff_dialog(self, draft: HandoffDraft, candidate: str | None) -> tuple[str, dict[str, int]] | None:
+        window = tk.Toplevel(self.root)
+        window.title(f"Review handoff: {draft.source.title()} -> {draft.target.title()}")
+        window.geometry("900x620")
+        ttk.Label(window, text="Choose what crosses to the other provider, edit it, then send. Secrets, e-mail "
+                               "addresses and home-folder names are redacted. Native sessions stay separate.",
+                  wraplength=860).pack(anchor="w", padx=8, pady=4)
+        body = ttk.Frame(window)
+        body.pack(fill="both", expand=True, padx=8)
+        picks = ttk.Frame(body)
+        picks.pack(side="left", fill="y")
+        editor = tk.Text(body, wrap="word")
+        editor.pack(side="right", fill="both", expand=True)
+        report = tk.StringVar()
+        flags: dict[str, tk.BooleanVar] = {}
+
+        def refresh() -> None:
+            for item_id, flag in flags.items():
+                if not draft.item(item_id).required:
+                    draft.set_included(item_id, flag.get())
+            packet, counts = draft.render()
+            editor.delete("1.0", "end")
+            editor.insert("1.0", packet)
+            note = describe_redactions(counts)
+            if candidate is not None:
+                findings = redact(candidate)[1]
+                note += (" The candidate answer is sent in full and unmodified for exact approval"
+                         + (f"; it contains: {describe_redactions(findings)}" if findings else "."))
+            report.set(note)
+
+        for item in draft.items:
+            flags[item.id] = tk.BooleanVar(value=item.included)
+            ttk.Checkbutton(picks, text=item.label, variable=flags[item.id], command=refresh,
+                            state="disabled" if item.required else "normal").pack(anchor="w")
+        ttk.Label(window, textvariable=report, wraplength=860).pack(anchor="w", padx=8)
+        result: dict[str, Any] = {"value": None}
+
+        def send() -> None:
+            text = editor.get("1.0", "end").strip()
+            findings = redact(candidate)[1] if candidate is not None else {}
+            if findings and not messagebox.askyesno(
+                    "Candidate contains secrets",
+                    f"The candidate answer contains: {describe_redactions(findings)}\n\nIt is sent verbatim "
+                    f"to {draft.target.title()}, because both providers must approve its exact text. Send it "
+                    "anyway? No goes back to the review; Cancel leaves the draft unapproved.", parent=window):
+                return
+            try:
+                result["value"] = draft.finalize(text)
+            except HandoffNeedsReview as needs:
+                if not messagebox.askyesno("Still looks secret", f"Your edited text still contains: "
+                                           f"{describe_redactions(needs.counts)}\n\nSend it anyway, unredacted?",
+                                           parent=window):
+                    return
+                result["value"] = draft.finalize(text, send_despite_findings=True)
+            window.destroy()
+
+        buttons = ttk.Frame(window)
+        buttons.pack(fill="x", padx=8, pady=6)
+        ttk.Button(buttons, text="Rebuild from selection (discards text edits)", command=refresh).pack(side="left")
+        ttk.Button(buttons, text="Cancel", command=window.destroy).pack(side="right")
+        ttk.Button(buttons, text="Send reviewed handoff", command=send).pack(side="right", padx=6)
+        refresh()
+        window.transient(self.root)
+        window.grab_set()
+        self.root.wait_window(window)
+        return result["value"]
 
     def _interrupt(self) -> None:
         if self.codex and self.codex.active_turn_id:
@@ -530,22 +729,8 @@ class DesktopHost:
             self.root.wait_window(window)
             return result["value"]
         if kind == "handoff":
-            window = tk.Toplevel(self.root)
-            window.title("Review cross-provider handoff")
-            window.geometry("760x540")
-            ttk.Label(window, text="Edit or remove sensitive context before sending it to Claude. Native sessions stay separate.").pack(anchor="w", padx=8)
-            editor = tk.Text(window, wrap="word")
-            editor.insert("1.0", data)
-            editor.pack(fill="both", expand=True, padx=8, pady=8)
-            result: dict[str, Any] = {"value": None}
-            def accept() -> None:
-                result["value"] = editor.get("1.0", "end").strip()
-                window.destroy()
-            ttk.Button(window, text="Send reviewed handoff", command=accept).pack()
-            window.transient(self.root)
-            window.grab_set()
-            self.root.wait_window(window)
-            return result["value"]
+            draft, candidate = data
+            return self._handoff_dialog(draft, candidate)
         if kind == "unsupported_approval":
             messagebox.showwarning("Unsupported approval", "This request needs a dedicated consent form. The turn will be interrupted.")
             return None
@@ -624,14 +809,24 @@ class DesktopHost:
                 elif kind == "verdict":
                     turn, owner = data
                     self._line(f"\n[{owner} {'answer complete' if turn.ok else 'failed or incomplete: ' + str(turn.failure)}]\n")
+                    if not turn.ok:
+                        other = "Claude" if owner == "Codex" else "Codex"
+                        self._line(f"[Hand off... can move this work to {other} with a packet you review first.]\n")
                 elif kind == "joint":
                     state: Collaboration = data
+                    if self.conversation is not None:
+                        self.conversation.append("collaboration", {
+                            "state": state.state, "lead": state.source_provider,
+                            "votes": {name: vote[0] for name, vote in state.votes.items()}})
                     if state.joint_answer is not None:
                         self._line(f"\n[Jointly approved by Claude and Codex; final review by "
                                    f"{state.final_provider or 'unspecified provider'}]\n{state.joint_answer}\n")
                     else:
                         self._line("\n[Collaboration unresolved. Drafts and reviews above are unapproved. Choose the next action.]\n")
-                        if self._dialog("resolution", state) == "use_draft":
+                        choice = self._dialog("resolution", state)
+                        if self.conversation is not None:
+                            self.conversation.append("user_decision", {"choice": choice, "draft_of": state.source_provider})
+                        if choice == "use_draft":
                             self._line(f"\n[User selected {state.source_provider} draft; not jointly approved]\n{state.candidate}\n")
                 elif kind == "error":
                     self._line(f"\n[Host failure: {data}. Turn unapproved.]\n")
@@ -643,7 +838,7 @@ class DesktopHost:
                     self.send_button.configure(state="normal")
         except queue.Empty:
             pass
-        self.root.after(50, self._drain)
+        self._drain_job = self.root.after(50, self._drain)
 
     def _disconnect(self) -> None:
         if self.codex_transport:

@@ -7,6 +7,7 @@ import queue
 import tempfile
 import unittest
 
+from tools.conversation import ConversationLog
 from tools.desktop import DesktopHost
 from tools.desktop_state import RolePlan, TurnRecord, parse_role_plan
 from tools.runtime_events import Envelope
@@ -38,6 +39,7 @@ class RolePlanTests(unittest.TestCase):
         host = DesktopHost.__new__(DesktopHost)
         host.workspace = Path(temp.name)
         host.messages = queue.Queue()
+        host.conversation = ConversationLog(Path(temp.name) / "conversation.jsonl", "ws")  # VLI-160
         calls = []
         digest = hashlib.sha256(b"candidate").hexdigest()
 
@@ -57,8 +59,9 @@ class RolePlanTests(unittest.TestCase):
         host._codex_turn = lambda text, model, effort, approval, role: turn("codex", text, model, effort, approval, role)
         host._claude_turn = lambda text, model, role, approval: turn("claude", text, model, role, approval)
         def ask(kind, value):
-            if kind == "handoff":
-                return value
+            if kind == "handoff":  # VLI-160: a curated draft; accept it as rendered
+                draft, _candidate = value
+                return draft.finalize(draft.render()[0])
             if kind == "role_decision":
                 return role_choice
             raise AssertionError("Unexpected dialog: " + kind)
