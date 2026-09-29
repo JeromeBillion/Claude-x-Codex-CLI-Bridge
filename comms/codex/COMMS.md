@@ -86,6 +86,31 @@ keep: integration/windows-alpha: no merged PR at this tip (open PR, unmerged wor
 keep: pre-publish-backup: no merged PR at this tip (open PR, unmerged work or no PR) - kept
 ```
 
+2026-09-29 ordered delivery update: [PR #21](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/21) merged the repo workflow, local agent mail and `docs/STATUS.md`. I read main `AGENTS.md`, received/acknowledged Claude's mailbox messages, ran `python -W error::ResourceWarning -m unittest tools.tests.test_agent_mail -q` -> 4 tests OK, and observed the local watchdog print mail/PR-comment events while this session was active. [Post-merge review](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/21#issuecomment-5892935399): `Verdict: APPROVED at de96f10`. Existing Codex PRs are grandfathered under the two-open-PR cap; no new PRs until the queue clears. Exact-head approval follows the next PR's rebase, not an earlier head.
+
+First ordered merge: in `.worktrees/runtime-schema`, `git fetch origin; git rebase origin/main` -> `03e2386`; full Windows suite -> 154 tests OK; compileall and diff check passed; installed Codex `0.158.0-alpha.2.1` no-turn probe passed schema, handshake, subscription-account, catalog and rate-limit checks, with turn/resume not requested. `git push --force-with-lease origin codex/vli-158-schema` replaced `40d6ece` with `03e2386`. [Claude's exact-head review](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/15#issuecomment-5892966691) ended `Verdict: APPROVED at 03e2386`. `gh pr merge 15 --squash` merged it as `0c7b263`; no real turn or Windows sandbox acceptance.
+
+After PR #15 merged, `python -m tools.repo_hygiene status` previewed removal of clean merged worktrees `claude-agent-mail` and `runtime-schema`, their local/remote branches, and a fast-forward of main; it kept every open PR branch, `integration/windows-alpha` and `pre-publish-backup`. No other process command line referenced the two worktrees. `python -m tools.repo_hygiene clean --apply` exited 0 with exact output:
+```text
+remove worktree C:\Users\choma\Desktop\Codex-Fable-Bridge\.worktrees\claude-agent-mail
+remove worktree C:\Users\choma\Desktop\Codex-Fable-Bridge\.worktrees\runtime-schema
+delete local branch claude/agent-mail
+delete local branch codex/vli-158-schema
+delete remote branch origin/claude/agent-mail
+delete remote branch origin/codex/vli-158-schema
+fast-forward main to origin/main
+keep: claude/vli-160-conversation: no merged PR at this tip (open PR, unmerged work or no PR) - kept
+keep: codex/vli-159-edit-gate: no merged PR at this tip (open PR, unmerged work or no PR) - kept
+keep: codex/vli-161-capabilities: no merged PR at this tip (open PR, unmerged work or no PR) - kept
+keep: codex/vli-162-package: no merged PR at this tip (open PR, unmerged work or no PR) - kept
+keep: codex/vli-163-role-agreement: no merged PR at this tip (open PR, unmerged work or no PR) - kept
+keep: codex/vli-183-relay: no merged PR at this tip (open PR, unmerged work or no PR) - kept
+keep: integration/windows-alpha: no merged PR at this tip (open PR, unmerged work or no PR) - kept
+keep: pre-publish-backup: no merged PR at this tip (open PR, unmerged work or no PR) - kept
+```
+
+Next review: PR #14 rebased onto merged main at `f157414`; Windows suite -> 165 tests OK; compileall and `git diff origin/main...HEAD --check` passed; pushed with `--force-with-lease`. Claude exact-head review is next. PR #20 head `5ba2df8` passed 174 Windows tests and fixes the five earlier findings, but an additional dummy-byte probe shows a torn multibyte UTF-8 character raises `UnicodeDecodeError` during `ConversationLog._load()`. [Ranked follow-up and repro](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/20#issuecomment-5892989622): `Verdict: CHANGES REQUESTED at 5ba2df8`. Claude was notified through agent mail; PR #20 stays in slot 4 after earlier merges. No Windows-ready or deployment claim. ready for review by Claude
+
 ## Previous prompt - 4 (VLI-158/159/160/163, Codex desktop integration)
 This is a project handover. You and Claude now own day-to-day delivery for Jerome; use VLI-157..163 as the source of scope and keep tickets current with evidence, decisions, blockers and dependencies. Build the next Windows-first desktop slice that can proceed without Jerome's PC acceptance: integrate the current Codex App Server runtime and shared event envelope into the desktop coding timeline, with dynamic catalog discovery and callable access to every OpenAI model the installed CLI exposes, per-turn model selection, native thread IDs/resume, streaming, visible limits/failures and blocking approvals. Keep approval toggle: ask-for-every-edit default; auto-accept only in folders explicitly trusted by the user. Implement the requested GPT-only / collaboration / Claude-only control (VLI-163): single modes have only the selected provider own the answer; in collaboration, Claude and Codex coordinate using their strengths and both must agree before any result is labeled/presented as jointly approved. Show disagreement/unavailable/error and require a user decision rather than silently presenting unapproved output. Fable, if routed to Claude, requires per-session confirmation. Preserve existing CLI, Windows-first scope, no API keys, credential interception or hidden billing. Coordinate the shared contract with Claude and the inspectable handoff tracked in VLI-160; do not claim cross-provider native session transfer. Focused tested changes may be self-merged to main only in this bridge repo under Jerome's existing repo-only grant; no deploy. Keep COMMS one live numbered prompt, reply under this prompt with commits/PRs, exact evidence/test results, risks and ticket links; update/re-read the whole file and ensure one Current heading after each edit because the GitHub web editor has previously corrupted structure. Escalate through COMMS only for security/policy issues, spending/credits, or genuine contradictory requirements. Jerome's Windows acceptance (two real turns/resume, native sandbox and approval exercise) remains open and must not be represented as done. Anthropic distribution/legal implications are unverified and deferred; personal-use first. His named models are examples: make every CLI-exposed OpenAI model callable, not a hard-coded subset.
 
