@@ -42,12 +42,14 @@ an explicit user answer. MCP elicitation, connector input and unknown approval f
 shown as unsupported and interrupt the turn. No silent approval is sent.
 
 Collaboration is deliberately sequential. Codex and Claude first make
-independent, no-tool role nominations for who leads and who gives the final
+independent role nominations for who leads and who gives the final
 review. Both must name the same roles to proceed automatically. Invalid,
 unavailable or disagreeing nominations open a user choice before any draft;
 the selected choice is shown as a user decision. Planning runs with the
 default ask policy and declines edit/command approvals; a tool event invalidates
-the nomination. The chosen lead drafts, the user can edit or omit the handoff
+the nomination and interrupts where possible. A non-blocking tool could start
+before the host sees its event, so this is still a live safety-review item.
+The chosen lead drafts, the user can edit or omit the handoff
 packet, and both providers review the exact candidate, with the nominated
 final reviewer voting last. This can use up to five subscription turns, which
 the UI states before Send. The candidate is
