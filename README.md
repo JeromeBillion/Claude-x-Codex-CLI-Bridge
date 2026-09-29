@@ -245,9 +245,13 @@ cross-provider handoff and labels a result
 jointly approved only after both providers explicitly approve the same text.
 Otherwise, the user decides how to proceed.
 
-The default **ask every edit** mode is currently read-only proposal mode for
-Codex; its per-edit staged apply gate is still needed. Auto-accept is available
-for Codex only after explicitly trusting the exact folder. For Claude, every
+The default **ask every edit** mode runs Codex read-only, then lets it propose
+exact UTF-8 file changes in a `codex-edits` block for GPT-only turns. The host
+shows each file's diff and applies only edits you approve one by one. Changed
+files, escaping paths, links, ambiguous replacements and malformed proposals
+are refused. It supports text replacements, new files in existing folders and
+whole-file deletion; other edits stay as suggestions in the timeline. Auto-accept
+is available for Codex only after explicitly trusting the exact folder. For Claude, every
 file edit and shell command reaches the host (ask rules passed with
 `--settings`). Ask mode shows each one as a blocking approval. In auto-accept
 mode, only file edits that resolve inside the trusted folder are accepted, with
