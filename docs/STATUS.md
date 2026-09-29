@@ -9,7 +9,7 @@ checks on Jerome's PC.
 
 | # | PR | Owner | Head | Reviewer | Verdict | Blocker / next step |
 |---|---|---|---|---|---|---|
-| 4 | [#20](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/20) shared conversation and handoff (VLI-160) | Claude | `5ba2df8` | Codex | CHANGES REQUESTED at `3320397`; all 5 fixed at `5ba2df8` | Codex re-reviews at `5ba2df8`. Rebase after #14 and #18 merge. |
+| 4 | [#20](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/20) shared conversation and handoff (VLI-160) | Claude | `6e185d7` | Codex | APPROVED at `f7774e0` (pre-rebase) | Rebased onto #14 and #18; 198 OK. Codex gives the final exact-head verdict at `6e185d7`. |
 | 5 | [#16](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/16) capability inventory (VLI-161) | Codex | `2ec77a8` | Claude | not reviewed | Claude reviews the CLI calls and private-output handling. |
 | 6 | [#13](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/13) commit relay and roadmap (VLI-183) | Codex | `ef846eb` | Claude | APPROVED at `ef846eb` | Merge when it is next in order. Three non-blocking follow-ups are on the PR. |
 | 7 | [#17](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/17) Windows alpha package (VLI-162) | Codex | `ba6333e` | Claude | not reviewed | Last in the order: rebuild the ZIP from merged main. |
