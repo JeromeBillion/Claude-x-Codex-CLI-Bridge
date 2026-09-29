@@ -51,7 +51,7 @@ class ProbeTests(unittest.TestCase):
         self.assertNotIn("AWS_SECRET_ACCESS_KEY", kwargs["env"])
         self.assertNotIn("GOOGLE_APPLICATION_CREDENTIALS", kwargs["env"])
         self.assertNotIn("NODE_OPTIONS", kwargs["env"])
-        stdout = "codex-cli 0.157.0\n" if command[-1] == "--version" else "private account secret"
+        stdout = "codex-cli 0.158.0-alpha.2.1\n" if command[-1] == "--version" else "private account secret"
         return subprocess.CompletedProcess(command, 0, stdout, "private secret")
 
     def test_default_discovery_makes_no_turn_and_allowlists_report(self):
@@ -86,7 +86,7 @@ class ProbeTests(unittest.TestCase):
 
     def test_version_mismatch_does_not_make_model_turn(self):
         def newer(command, **kwargs):
-            return subprocess.CompletedProcess(command, 0, "codex-cli 0.158.0\n", "")
+            return subprocess.CompletedProcess(command, 0, "codex-cli 0.158.0-alpha.2.2\n", "")
 
         with patch("tools.codex_probe.shutil.which", return_value="/fake/codex"), \
              patch("tools.codex_probe.subprocess.run", side_effect=newer), \
@@ -103,7 +103,10 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(codex_probe.safe_child_env({"Path": "bin", "OPENAI_API_KEY": "priv8x7q",
                                                      "AWS_PROFILE": "priv8x7q", "SOME_FUTURE_CLOUD_SECRET": "priv8x7q"}),
                          {"Path": "bin"})
-        self.assertIsNone(codex_probe.version_tuple("no version"))
+        self.assertIsNone(codex_probe.version_id("no version"))
+        self.assertEqual(codex_probe.version_id("codex-cli 0.158.0-alpha.2.1"),
+                         "0.158.0-alpha.2.1")
+        self.assertNotEqual(codex_probe.version_id("codex-cli 0.158.0"), codex_probe.TESTED_VERSION)
 
     def test_short_private_marker_in_catalog_and_error_is_not_reported(self):
         original = FakeAppServer.request
