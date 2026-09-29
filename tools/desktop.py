@@ -261,7 +261,7 @@ class DesktopHost:
             runtime.open_thread(self.workspace, approval_mode=approval, trusted_folders=self.codex_trust)
         turn = TurnRecord("codex", model)
         self.messages.put(("line", f"\nCODEX {role.upper()} / {model} / native thread {runtime.thread_id}\n"))
-        if approval == "ask_every_edit" and role == "answer":
+        if approval == "ask_every_edit" and role in {"answer", "draft, unapproved"}:
             text += ("\n\nIf this request needs file edits, do not write files. Propose each edit in one "
                      "fenced JSON block whose opening line is exactly ```codex-edits, with {\"edits\":[{\"path\":\"relative/posix/path\","
                      "\"old_text\":\"exact unique existing text, or null for a new file\","
@@ -377,6 +377,16 @@ class DesktopHost:
                 state.unavailable()
                 self.messages.put(("joint", state))
                 return
+            if lead_provider == "codex" and approval == "ask_every_edit":
+                try:
+                    # Validate the complete proposal before asking the partner to approve it.
+                    # Applying it still waits for both votes and each user's file decision.
+                    stage_proposals(self.workspace, lead.text)
+                except EditProposalError as exc:
+                    self.messages.put(("line", f"\n[Codex edit proposal rejected: {exc}. No files applied.]\n"))
+                    state.unavailable()
+                    self.messages.put(("joint", state))
+                    return
             state.propose(lead.text, lead_provider)
             packet = handoff_text(self.workspace.name, lead, prompt)
             packet = self._ask("handoff", packet)
@@ -397,6 +407,8 @@ class DesktopHost:
                 f"Review your earlier candidate after {partner_provider} approved it. Check workspace evidence again. Reply exactly APPROVE {digest} only if you still agree this exact candidate is the best answer; otherwise reply DISAGREE and explain why. Do not modify files in this review.",
                 "final review, unapproved")
             state.vote(lead_provider, approves=confirmation.ok and confirmation.text.strip() == f"APPROVE {digest}", reviewed_text=state.candidate)
+            if state.joint_answer is not None and lead_provider == "codex" and approval == "ask_every_edit":
+                self._review_codex_edits(lead)
             self.messages.put(("joint", state))
         except Exception:
             state.unavailable()
