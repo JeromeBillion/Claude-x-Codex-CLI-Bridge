@@ -66,7 +66,7 @@ class DesktopHost:
         self.claude_choice = tk.StringVar()
         self.status = tk.StringVar(value="Select a local project. No model turn starts on Connect.")
         self._build()
-        self.root.after(50, self._drain)
+        self._drain_job = self.root.after(50, self._drain)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
 
     def _build(self) -> None:
@@ -835,7 +835,7 @@ class DesktopHost:
                     self.send_button.configure(state="normal")
         except queue.Empty:
             pass
-        self.root.after(50, self._drain)
+        self._drain_job = self.root.after(50, self._drain)
 
     def _disconnect(self) -> None:
         if self.codex_transport:

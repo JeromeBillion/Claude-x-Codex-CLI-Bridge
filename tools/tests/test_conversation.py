@@ -125,6 +125,18 @@ class ConversationLogTests(unittest.TestCase):
         self.assertEqual([e.data["text"] for e in third.entries], ["first", "second"])
         self.assertEqual(third.damaged_lines, 1)
 
+    def test_a_torn_multibyte_character_costs_one_line_not_the_history(self) -> None:
+        log = ConversationLog.open_latest(self.state, self.workspace)
+        log.record_user("first — café", mode="gpt_only", providers=["codex"])
+        with open(log.path, "ab") as handle:
+            handle.write('{"v":1,"text":"'.encode("utf-8") + "—".encode("utf-8")[:1])  # cut mid-character
+        again = ConversationLog(log.path, "ledger-app")  # previously raised UnicodeDecodeError
+        self.assertEqual(again.damaged_lines, 1)
+        again.record_user("second", mode="gpt_only", providers=["codex"])
+        third = ConversationLog(log.path, "ledger-app")
+        self.assertEqual([e.data["text"] for e in third.entries], ["first — café", "second"])
+        self.assertEqual(third.damaged_lines, 1)
+
     def test_start_new_is_durable_before_the_next_entry(self) -> None:
         old = ConversationLog.open_latest(self.state, self.workspace)
         old.record_user("old", mode="gpt_only", providers=["codex"])

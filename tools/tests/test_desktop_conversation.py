@@ -114,6 +114,8 @@ class TkHandoffDialogTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         with patch("tools.desktop.private_state_dir", return_value=Path(tmp.name) / "state"):
             self.host = DesktopHost(self.root)
+        # Runs before root.destroy (cleanups are LIFO): no queued UI refresh outlives the window.
+        self.addCleanup(lambda: self.root.after_cancel(self.host._drain_job))
         self.workspace = Path(tmp.name) / "proj"
         self.workspace.mkdir()
         self.host.workspace = self.workspace

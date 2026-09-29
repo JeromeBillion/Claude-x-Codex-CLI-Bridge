@@ -160,10 +160,17 @@ class ConversationLog:
 
     def _load(self) -> None:
         try:
-            lines = self.path.read_text(encoding="utf-8").splitlines()
+            data = self.path.read_bytes()
         except FileNotFoundError:
             return
-        for line in lines:
+        # Decode line by line: a crash can cut a multibyte character in half, and that
+        # must cost one damaged line, not the whole history (Codex review of PR #20).
+        for chunk in data.split(b"\n"):
+            try:
+                line = chunk.decode("utf-8")
+            except UnicodeDecodeError:
+                self.damaged_lines += 1
+                continue
             if not line.strip():
                 continue
             try:
