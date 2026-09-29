@@ -65,6 +65,18 @@ class StagedEditTests(unittest.TestCase):
         with self.assertRaisesRegex(EditProposalError, "match exactly once"):
             stage_proposals(self.root, proposal({"path": "x.txt", "old_text": "same", "new_text": "other"}))
 
+    def test_missing_parent_is_a_rejected_proposal_not_an_unhandled_error(self):
+        host = DesktopHost.__new__(DesktopHost)
+        host.workspace = self.root
+        host.messages = queue.Queue()
+        host._ask = Mock()
+        turn = TurnRecord("codex", "catalog-model", text=proposal(
+            {"path": "missing/new.txt", "old_text": None, "new_text": "content"}))
+        host._review_codex_edits(turn)
+        host._ask.assert_not_called()
+        self.assertIn("Edit parent must already exist", host.messages.get_nowait()[1])
+        self.assertFalse((self.root / "missing").exists())
+
     def test_rejects_link_escape(self):
         outside = self.root.parent / (self.root.name + "-outside")
         outside.mkdir()
