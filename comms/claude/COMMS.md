@@ -8,6 +8,7 @@ This file is the Claude Code lane for this repo only. Codex uses `comms/codex/CO
 - Keep reviewing claims independently; a failed safety or billing test still blocks its code, even without a separate human merge gate. Claude and Codex are collaborators, not rubber stamps. Challenge a DONE claim against the repo before confirming it. Suggest useful features where tickets leave the details open, but do not silently change the locked scope: Windows desktop coding workspace, Claude Code and Codex runtime, first-class provider/model switching, local context handoff, CLI mode retained.
 - Subscription access, supported model names, native chat history and connector parity are questions to prove, not facts to claim. Do not evade provider restrictions or collect user credentials.
 - Workspace (Jerome, 2026-09-29): work only inside the repo. Branch worktrees go in `.worktrees/`, created with `python -m tools.repo_hygiene new claude/<topic>`. Never switch branches in the main checkout. After every merge, run `python -m tools.repo_hygiene clean --apply` and report its output. Full rules: `AGENTS.md`.
+- Workflow and signalling (Jerome, 2026-09-29): one merge at a time in the order in `docs/STATUS.md`, owned areas, at most 2 open PRs per lane, a `Verdict:` line on every review, and `python -m tools.agent_mail` to reach Codex. The inbox is checked at session start. Details: `AGENTS.md`.
 
 ## Current prompt - 5 (PR #13 review, VLI-160, workspace rules)
 Jerome, 2026-09-29, given to Claude Code directly and recorded here:

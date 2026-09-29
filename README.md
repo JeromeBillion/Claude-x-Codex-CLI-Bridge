@@ -218,6 +218,7 @@ The resume probe leaves one short session in the CLI's own local history.
 Branch work happens only inside the repo, in `.worktrees/`, and after every
 merge the merging agent runs `python -m tools.repo_hygiene clean --apply`.
 See [AGENTS.md](AGENTS.md) for the full rules.
+The live PR board and merge order are in [docs/STATUS.md](docs/STATUS.md). The lanes signal each other with `python -m tools.agent_mail`.
 
 ## Tests
 
