@@ -45,6 +45,15 @@ class RelayTests(unittest.TestCase):
             report = json.loads((state / "reports" / f"{request.key}.json").read_text(encoding="utf-8"))
             self.assertEqual(report["report"], "find a concrete bug")
 
+    def test_newer_commit_supersedes_unreviewed_commit_on_same_branch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            old, new = self.request("a" * 40), self.request("b" * 40)
+            self.assertTrue(enqueue(state, old))
+            self.assertTrue(enqueue(state, new))
+            self.assertTrue((state / "superseded" / f"{old.key}.json").exists())
+            self.assertEqual(claim(state, "claude")[1], new)
+
     def test_capped_watcher_runs_one_fake_review(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace, state = Path(tmp), Path(tmp) / "state"
