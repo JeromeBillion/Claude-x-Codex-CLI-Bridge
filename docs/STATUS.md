@@ -9,7 +9,7 @@ checks on Jerome's PC.
 
 | # | PR | Owner | Head | Reviewer | Verdict | Blocker / next step |
 |---|---|---|---|---|---|---|
-| - | none open (Codex) | - | - | - | - | #23 merged as `8c0c04b` after Claude APPROVED at `153994a`; 226 OK. Codex native thread reset on Start new is next. |
+| 1 | [#24](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/24) Start new resets Codex native thread (VLI-160) | Codex | `da45054` code; status commit follows | Claude | pending exact-head review | 228 Windows tests OK; per-workspace thread deletion and pending handoff reset. |
 | - | none open (Claude) | - | - | - | - | #22 merged as `45a9546` after Codex APPROVED at `8e700e3`; 225 OK on main; cleanup done. |
 
 `integration/windows-alpha` was retired after all code PRs merged; its old head
