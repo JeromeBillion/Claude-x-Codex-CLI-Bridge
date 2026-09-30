@@ -239,6 +239,10 @@ Choose a project, select GPT only, collaboration, or Claude only, then connect
 the installed CLIs to discover their model catalogs without sending a model
 turn. Select a model for each turn. The timeline shows streaming text, tool
 activity, limits, failures, native provider session IDs and blocking approvals.
+**Inspect capabilities** opens a local, on-demand [capability matrix](docs/capability-matrix.md)
+of the installed CLIs' skills, MCP servers, plugins and apps. A listing is
+not proof that a tool call works; MCP health checks may contact configured
+servers, and the button sends no model turn.
 Codex resumes its own thread ID after a restart; Claude keeps its own session
 ID. In collaboration, both providers nominate a lead and final reviewer; if
 they disagree, the user chooses or leaves the task pending. This can use up to
