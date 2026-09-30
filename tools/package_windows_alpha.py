@@ -18,14 +18,27 @@ MAX_FILE_SIZE = 5_000_000
 
 
 def files_for_archive(source: Path) -> list[Path]:
+    for name in ("docs", "tools", ".githooks"):
+        directory = source / name
+        if directory.is_symlink() or getattr(directory, "is_junction", lambda: False)() \
+                or (directory.exists() and not directory.resolve(strict=True).is_relative_to(source)):
+            raise ValueError("Alpha source directory is linked outside the checkout")
+    tracked_output = subprocess.run(["git", "ls-files", "-z"], cwd=source,
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    check=True).stdout
+    tracked = {entry.decode("utf-8") for entry in tracked_output.split(b"\0") if entry}
     required = [source / name for name in ("README.md", "LICENSE", "bridge.ps1", "launch-desktop.cmd")]
-    if not all(path.is_file() for path in required):
+    if not all(path.is_file() and path.relative_to(source).as_posix() in tracked for path in required):
         raise ValueError("Required alpha files are missing")
-    paths = required + sorted((source / "docs").glob("*.md"))
-    paths += sorted((source / "tools").glob("*.py"))
-    paths += sorted((source / "tools" / "tests").glob("*.py"))
+    paths = required + sorted(path for path in (source / "docs").glob("*.md")
+                              if path.relative_to(source).as_posix() in tracked)
+    paths += sorted(path for path in (source / "tools").glob("*.py")
+                    if path.relative_to(source).as_posix() in tracked)
+    paths += sorted(path for path in (source / "tools" / "tests").glob("*.py")
+                    if path.relative_to(source).as_posix() in tracked)
     if (source / ".githooks").is_dir():
-        paths += sorted(path for path in (source / ".githooks").iterdir() if path.is_file())
+        paths += sorted(path for path in (source / ".githooks").iterdir()
+                        if path.is_file() and path.relative_to(source).as_posix() in tracked)
     for path in paths:
         # A file under a linked directory is not itself reported as a symlink.
         # Resolve the whole path before reading it into a distributable archive.
