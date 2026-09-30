@@ -150,7 +150,10 @@ whole render.
    redacted, plus anything found in the user's edit. When the user sends
    unredacted text anyway, the report also records `sent_unredacted_by_user`.
 5. **Start new is durable at once.** It writes a `conversation_started` note,
-   so reopening selects the new conversation.
+   so reopening selects the new conversation. The live Claude session is closed,
+   and the saved Codex thread for that workspace is cleared. Each provider's
+   next turn starts a new native session; earlier provider sessions are not
+   deleted.
 
 ## Open
 

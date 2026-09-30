@@ -6,12 +6,15 @@ import queue
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from tools.codex_app_server import (AppServerError, AppServerTransport, CodexRuntime,
                                     ThreadStore, TrustedFolderStore, normalize_app_event)
 from tools.runtime_events import Envelope
+from tools.conversation import ConversationLog
+from tools.desktop import DesktopHost
 from claude_runtime import normalize as normalize_claude
 
 
@@ -48,6 +51,46 @@ class FakeTransport:
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_start_new_conversation_starts_a_fresh_codex_thread(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "project"
+            workspace.mkdir()
+            store = ThreadStore(root / "threads.json")
+            store.put(workspace, "thr_old")
+            host = DesktopHost.__new__(DesktopHost)
+            host.workspace = workspace
+            host.busy = False
+            host.codex_threads = store
+            host.codex = SimpleNamespace(thread_id="thr_old")
+            host.claude_session = None
+            host.claude_model = None
+            host.claude_consent = None
+            host.pending_handoff = object()
+            host.conversation = ConversationLog.open_latest(root / "state", workspace)
+            old = host.conversation
+            host._line = lambda text: None
+            with patch("tools.desktop.private_state_dir", return_value=root / "state"):
+                self.assertTrue(host._start_new_conversation())
+            self.assertIsNone(store.get(workspace))
+            self.assertIsNone(host.codex.thread_id)
+            self.assertIsNone(host.pending_handoff)
+            self.assertNotEqual(host.conversation.path, old.path)
+
+    def test_thread_store_forget_removes_only_selected_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first, second = root / "first", root / "second"
+            first.mkdir()
+            second.mkdir()
+            store = ThreadStore(root / "threads.json")
+            store.put(first, "thr_first")
+            store.put(second, "thr_second")
+            store.forget(first)
+            self.assertIsNone(store.get(first))
+            self.assertEqual(store.get(second), "thr_second")
+            store.forget(first)  # idempotent
+
     def test_full_catalog_includes_hidden_entries_and_uses_callable_model_name(self):
         class CatalogTransport(FakeTransport):
             def request(self, method, params=None):

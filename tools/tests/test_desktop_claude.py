@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_claude_runtime import FakeCliFixture  # noqa: E402
 from tools import claude_runtime  # noqa: E402
 from tools.approval_modes import TrustedFolderStore  # noqa: E402
+from tools.codex_app_server import ThreadStore  # noqa: E402
 from tools.desktop import DesktopHost  # noqa: E402
 from tools.conversation import ConversationLog  # noqa: E402
 
@@ -30,6 +31,9 @@ class DesktopClaudeTests(FakeCliFixture):
         host.claude_session = None
         host.claude_model = None
         host.claude_consent = None
+        host.codex = None
+        host.codex_threads = ThreadStore(self.root / "codex-threads.json")
+        host.pending_handoff = None
         host.conversation = None  # VLI-160 recording is covered in test_desktop_conversation
         host.claude_trust = self.trust
         host.codex_trust = TrustedFolderStore(self.root / "auto.json")
