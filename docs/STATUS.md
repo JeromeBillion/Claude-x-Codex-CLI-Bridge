@@ -9,7 +9,7 @@ checks on Jerome's PC.
 
 | # | PR | Owner | Head | Reviewer | Verdict | Blocker / next step |
 |---|---|---|---|---|---|---|
-| 1 | [#24](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/24) Start new resets Codex native thread (VLI-160) | Codex | `da45054` code; status commit follows | Claude | pending exact-head review | 228 Windows tests OK; per-workspace thread deletion and pending handoff reset. |
+| - | none open (Codex) | - | - | - | - | #24 merged as `c718235` after Claude APPROVED at `90fd51a`; 228 OK. |
 | - | none open (Claude) | - | - | - | - | #22 merged as `45a9546` after Codex APPROVED at `8e700e3`; 225 OK on main; cleanup done. |
 
 `integration/windows-alpha` was retired after all code PRs merged; its old head
@@ -24,8 +24,10 @@ PR #18 merged third at `935b9be` after Claude approved head `fc2aa19`.
 
 | Check | State |
 |---|---|
-| Live signed-in CLI probes | Codex 0.158.0-alpha.2.1: Plus, nine catalog rows, native restart/resume. Claude 2.1.201: first-party Team, Haiku/Sonnet switching, resume, Write allow/deny, interrupt and unknown-model failure. No Fable call. |
+| Live signed-in CLI probes | Codex 0.158.0-alpha.2.1: Plus, all nine catalog rows completed tiny read-only turns, native restart/resume passed. Claude 2.1.201: first-party Team, Haiku/Sonnet switching, default-model turn, resume, Write allow/deny, interrupt and unknown-model failure. No Fable call. |
 | Desktop native resume | GPT-only and Claude-only real turns passed; native IDs and marker recall survived host restart. Claude host fix merged in #22. |
-| Windows approvals and boundary | Real Codex staged edit deny/accept and trusted edit passed. Claude Write deny/accept and trusted edit passed. Bash and protected `.claude/settings.json` requests blocked for user decision. Outside-folder Codex attempt left file absent; stronger sandbox attribution remains to assess. |
+| Windows approvals and boundary | Real Codex staged edit deny/accept and trusted edit passed. An outside-folder command produced a native approval request; decline left its file absent. Claude Write deny/accept and trusted edit passed. Bash and protected `.claude/settings.json` requests blocked for user decision. Trusted Claude writes to a parent path and through a Windows junction also asked, and decline left targets absent. |
 | Collaboration and handoff | Real disagreement stayed unapproved with user resolution; a five-turn simple case received both exact-hash approvals after #23's parser. Manual handoff recorded on Send. Simulated limit produced a reviewed packet and successful target Codex turn. |
-| Remaining release checks | Redaction/re-scan UI exercise, extracted-package live path, model catalog callable sampling, native Codex thread reset on Start new, and final-main retest. |
+| Redaction, Stop and failures | Real Tk redaction tests 7 OK; final-text re-scan and fake-token confirmation pass. Claude Stop during an active turn failed it with no later approval. Simulated auth/offline/limit failures mapped to visible reasons and handoff suggestion. |
+| Package and final main | 228 tests OK, compileall OK. 48-file ZIP integrity and SHA-256 verified; extracted smoke exit 0; real GPT-only and Claude-only turns plus native restart/resume passed from extracted code. |
+| Remaining release check | Claude's independent final acceptance audit and resolution of any finding. One transient 15-second Codex thread-start timeout was observed before a successful retry; document as a reliability risk. |
