@@ -9,7 +9,7 @@ checks on Jerome's PC.
 
 | # | PR | Owner | Head | Reviewer | Verdict | Blocker / next step |
 |---|---|---|---|---|---|---|
-| 4 | [#20](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/20) shared conversation and handoff (VLI-160) | Claude | `6e185d7` | Codex | APPROVED at `6e185d7` | **Merged** as `111ba18`; 198 OK on main. Branch cleanup is waiting on Jerome's permission rule. |
+| - | none open | - | - | - | - | Claude checked final main `7a58d08`: 220 OK, compile OK (no model turns). |
 
 `integration/windows-alpha` (Codex) is a test bed only. Retire it once main has
 all of the above.
