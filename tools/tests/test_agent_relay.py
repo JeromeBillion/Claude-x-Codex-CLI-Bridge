@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from tools.agent_relay import (Request, _review_codex, claim, common_state, complete, enqueue,
                                main,
-                               enqueue_head, hook_effective, install_hook, lane_from_branch, watch)
+                               enqueue_head, hook_copy_current, hook_effective, install_hook, lane_from_branch, watch)
 
 
 SHA = "a" * 40
@@ -98,6 +98,7 @@ class RelayTests(unittest.TestCase):
             run(repo, "add", "initial.txt")
             run(repo, "commit", "-qm", "initial")
             install_hook(repo)
+            self.assertTrue(hook_copy_current(repo))
             run(repo, "worktree", "add", "-qb", "claude/old", str(old), "HEAD")
             self.assertTrue(hook_effective(old))
             self.assertFalse((old / "tools" / "agent_relay.py").exists())
@@ -107,6 +108,16 @@ class RelayTests(unittest.TestCase):
             pending = list((common_state(repo) / "pending").glob("*-codex.json"))
             self.assertEqual(len(pending), 1)
             self.assertFalse((common_state(repo) / "hook-errors.log").exists())
+            installed = common_state(repo).parent / "hooks" / "agent-relay.py"
+            installed.write_bytes(installed.read_bytes() + b"\n# stale copy\n")
+            self.assertFalse(hook_copy_current(repo))
+            output = StringIO()
+            with patch("tools.agent_relay.Path.cwd", return_value=repo), \
+                 patch.object(sys, "argv", ["agent_relay", "status", "--agent", "codex"]), \
+                 redirect_stdout(output):
+                self.assertEqual(main(), 0)
+            self.assertIn("re-run install-hook", output.getvalue())
+            self.assertIn("Codex unattended reviews disabled", output.getvalue())
             run(repo, "worktree", "remove", "-f", str(old))
 
     def test_codex_unattended_review_fails_before_transport_spawn(self):

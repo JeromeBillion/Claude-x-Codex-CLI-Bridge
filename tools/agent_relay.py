@@ -68,6 +68,15 @@ def hook_effective(workspace: Path) -> bool:
                 and (hooks / "post-commit").is_file() and (hooks / "agent-relay.py").is_file())
 
 
+def hook_copy_current(workspace: Path) -> bool:
+    """The installed relay is a copy and needs reinstalling after source changes."""
+    installed = common_state(workspace).parent / "hooks" / "agent-relay.py"
+    try:
+        return installed.read_bytes() == Path(__file__).resolve().read_bytes()
+    except OSError:
+        return False
+
+
 def install_hook(workspace: Path) -> Path:
     """Install one branch-independent hook under the common Git directory."""
     common = common_state(workspace).parent
@@ -348,8 +357,12 @@ def main() -> int:
     elif args.command == "status":
         print("hook: effective in this worktree" if hook_effective(workspace)
               else "hook: not effective in this worktree")
+        if hook_effective(workspace) and not hook_copy_current(workspace):
+            print("hook: installed relay copy is stale; re-run install-hook")
         errors = state / "hook-errors.log"
         print(f"hook errors: {len(errors.read_text(encoding='utf-8').splitlines()) if errors.exists() else 0}")
+        if args.agent == "codex":
+            print("Codex unattended reviews disabled: MCP/app tools lack a verified pre-call veto; review manually")
         for folder in ("pending", "processing", "done", "failed", "superseded"):
             print(f"{folder}: {len(list((state / folder).glob(f'*-{args.agent}.json')))}")
     elif args.command == "watch":
