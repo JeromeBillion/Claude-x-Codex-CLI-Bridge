@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import re
 from typing import Literal
 
 from tools.runtime_events import Envelope
@@ -15,6 +16,27 @@ from tools.runtime_events import Envelope
 Mode = Literal["gpt_only", "collaboration", "claude_only"]
 MODES: tuple[Mode, ...] = ("gpt_only", "collaboration", "claude_only")
 BLOCKING_KINDS = frozenset({"approval_request", "mcp_elicitation", "connector_approval_request"})
+
+
+def explicit_approval(text: str, digest: str) -> bool:
+    """Accept a signed first-line vote, with optional non-vote explanation.
+
+    Real CLIs may append a reason after an explicit approval. A second vote or
+    rejection anywhere in that reason makes the response ambiguous and fails
+    closed. The full candidate still travels verbatim to the reviewer.
+    """
+    if not isinstance(text, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return False
+    if len(text) > 2048:
+        return False
+    lines = text.strip().splitlines()
+    if not lines or lines[0].strip() != f"APPROVE {digest}":
+        return False
+    rest = "\n".join(lines[1:])
+    if re.search(r"\b(?:approv\w*|disagre\w*|reject\w*|refus\w*|changes?)\b", rest, re.IGNORECASE):
+        return False
+    hashes = re.findall(r"(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", rest, re.IGNORECASE)
+    return all(value == digest for value in hashes)
 
 
 @dataclass(frozen=True)
