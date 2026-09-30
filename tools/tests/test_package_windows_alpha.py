@@ -40,6 +40,22 @@ class WindowsPackageTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_archive(Path(temp), Path(temp) / "alpha.zip", "not-a-sha")
 
+    def test_linked_document_directory_cannot_package_outside_files(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "source"
+            root.mkdir()
+            outside = Path(temp) / "outside"
+            outside.mkdir()
+            (outside / "private.md").write_text("private-content", encoding="utf-8")
+            for name in ("README.md", "LICENSE", "bridge.ps1", "launch-desktop.cmd"):
+                (root / name).write_text(name, encoding="utf-8")
+            try:
+                (root / "docs").symlink_to(outside, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"Directory symlinks unavailable: {exc}")
+            with self.assertRaises(ValueError):
+                build_archive(root, root / "alpha.zip", "abc123")
+
 
 if __name__ == "__main__":
     unittest.main()

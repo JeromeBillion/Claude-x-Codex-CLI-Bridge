@@ -27,7 +27,11 @@ def files_for_archive(source: Path) -> list[Path]:
     if (source / ".githooks").is_dir():
         paths += sorted(path for path in (source / ".githooks").iterdir() if path.is_file())
     for path in paths:
+        # A file under a linked directory is not itself reported as a symlink.
+        # Resolve the whole path before reading it into a distributable archive.
+        resolved = path.resolve(strict=True)
         if path.is_symlink() or getattr(path, "is_junction", lambda: False)() \
+                or not resolved.is_relative_to(source) \
                 or not path.is_file() or path.stat().st_size > MAX_FILE_SIZE:
             raise ValueError("Alpha file is unsafe or oversized")
     return paths
