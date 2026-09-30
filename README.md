@@ -231,6 +231,8 @@ python -m unittest discover -s tools/tests -p "test_*.py" -v
 Delivery order and the Windows readiness gate are in [the roadmap](docs/ROADMAP.md).
 The bounded, local commit review loop for the Claude and Codex worktrees is
 documented in [the agent relay guide](docs/agent-relay.md).
+The [Windows alpha launch and acceptance guide](docs/windows-alpha.md) covers
+the source ZIP, `launch-desktop.cmd`, and the tests needed before a ready claim.
 
 The separate [runtime design](docs/codex-app-server-runtime.md) and
 `tools/codex_app_server.py` feed a first personal desktop timeline:
