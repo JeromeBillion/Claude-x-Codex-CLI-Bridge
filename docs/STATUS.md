@@ -11,8 +11,9 @@ checks on Jerome's PC.
 |---|---|---|---|---|---|---|
 | - | none open | - | - | - | - | Claude checked final main `7a58d08`: 220 OK, compile OK (no model turns). |
 
-`integration/windows-alpha` (Codex) is a test bed only. Retire it once main has
-all of the above.
+`integration/windows-alpha` was retired after all code PRs merged; its old head
+`b5b1ca9` is preserved as `archive/integration-windows-alpha-20260930`.
+`pre-publish-backup` remains untouched for Jerome.
 
 PR #15 merged first at `0c7b263` after Claude approved head `03e2386`.
 PR #14 merged second at `fd9557b4` after Claude approved head `e08f97b`.
