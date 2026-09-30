@@ -10,7 +10,7 @@ checks on Jerome's PC.
 | # | PR | Owner | Head | Reviewer | Verdict | Blocker / next step |
 |---|---|---|---|---|---|---|
 | 4 | [#20](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/20) shared conversation and handoff (VLI-160) | Claude | `6e185d7` | Codex | APPROVED at `6e185d7` | **Merged** as `111ba18`; 198 OK on main. Branch cleanup is waiting on Jerome's permission rule. |
-| 7 | [#17](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/17) Windows alpha package (VLI-162) | Codex | `359356b` | Claude | not reviewed | Linked-directory escape fixed; pre-rebase 148 tests and extracted ZIP smoke OK. Last in order: rebase, repeat and review. |
+| 7 | [#17](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/17) Windows alpha package (VLI-162) | Codex | `bfb1076` | Claude | awaiting exact-head review | Rebased; 219 Windows tests, 48-file ZIP and extracted launcher smoke OK. |
 
 `integration/windows-alpha` (Codex) is a test bed only. Retire it once main has
 all of the above.
