@@ -9,7 +9,7 @@ import unittest
 
 from tools.conversation import ConversationLog
 from tools.desktop import DesktopHost
-from tools.desktop_state import RolePlan, TurnRecord, parse_role_plan
+from tools.desktop_state import RolePlan, TurnRecord, explicit_approval, parse_role_plan
 from tools.runtime_events import Envelope
 
 
@@ -20,6 +20,22 @@ def finished(provider, text):
 
 
 class RolePlanTests(unittest.TestCase):
+    def test_explicit_hash_vote_allows_a_reason_but_rejects_ambiguity(self):
+        digest = hashlib.sha256(b"candidate").hexdigest()
+        self.assertTrue(explicit_approval(f"APPROVE {digest}", digest))
+        self.assertTrue(explicit_approval(f"APPROVE {digest}\n\nThe answer is correct.", digest))
+        wrong = digest[:-1] + ("0" if digest[-1] != "0" else "1")
+        for output in (f"I think APPROVE {digest}", f"APPROVE {wrong}",
+                       f"APPROVE {digest}\nDISAGREE after reconsidering",
+                       f"APPROVE {digest}\nCHANGES REQUESTED",
+                       f"APPROVE {digest}\nA different candidate hash: {wrong}",
+                       f"APPROVE {digest}\nAPPROVE another version",
+                       f"DISAGREE\nAPPROVE {digest}",
+                       f"Here is my answer.\nAPPROVE {digest}",
+                       "The answer is correct.", f"APPROVE {digest}\n" + "x" * 2048):
+            with self.subTest(output=output[:30]):
+                self.assertFalse(explicit_approval(output, digest))
+
     def test_exact_role_plan_and_rejections(self):
         expected = RolePlan("codex", "claude", "code first")
         self.assertEqual(parse_role_plan('{"lead":"codex","final":"claude","reason":"code first"}'), expected)

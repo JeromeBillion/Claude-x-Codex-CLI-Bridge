@@ -22,7 +22,7 @@ from tools.codex_app_server import AppServerTransport, CodexRuntime, ThreadStore
 from tools.codex_probe import safe_child_env
 from tools.conversation import (ConversationLog, HandoffDraft, HandoffNeedsReview, describe_redactions,
                                 draft_handoff, redact)
-from tools.desktop_state import BLOCKING_KINDS, Collaboration, RolePlan, TurnRecord, parse_role_plan
+from tools.desktop_state import BLOCKING_KINDS, Collaboration, RolePlan, TurnRecord, explicit_approval, parse_role_plan
 from tools.runtime_events import Envelope
 from tools.staged_edits import EditProposalError, StagedEdit, is_agent_config_path, stage_proposals
 
@@ -548,7 +548,7 @@ class DesktopHost:
                                 "Do not modify files in this review.")
                 vote = provider_turn(reviewer, review_text, "final review, unapproved" if reviewer == final_provider
                                      else "review, unapproved")
-                state.vote(reviewer, approves=vote.ok and vote.text.strip() == f"APPROVE {digest}",
+                state.vote(reviewer, approves=vote.ok and explicit_approval(vote.text, digest),
                            reviewed_text=state.candidate)
                 if state.state == "needs_user_decision":
                     break
