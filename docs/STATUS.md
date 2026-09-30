@@ -9,7 +9,7 @@ checks on Jerome's PC.
 
 | # | PR | Owner | Head | Reviewer | Verdict | Blocker / next step |
 |---|---|---|---|---|---|---|
-| 1 | [#22](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/22) resume Claude session after window restart (VLI-160) | Claude | `8e700e3` | Codex | CHANGES REQUESTED at `632b1e7` (Start new) -> fixed | Restart reproducer passed live on 632b1e7; Start new fix at 8e700e3, 225 OK. Needs Codex re-review. |
+| - | none open (Claude) | - | - | - | - | #22 merged as `45a9546` after Codex APPROVED at `8e700e3`; 225 OK on main; cleanup done. |
 
 `integration/windows-alpha` was retired after all code PRs merged; its old head
 `b5b1ca9` is preserved as `archive/integration-windows-alpha-20260930`.
