@@ -338,6 +338,7 @@ class ClaudeSession:
                  trust: TrustStore, credit_consent: CreditConsent | None = None,
                  effort: str | None = None, approval_mode: str = ASK_EVERY_EDIT,
                  auto_trust: TrustedFolderStore | None = None,
+                 disable_tools: bool = False,
                  spawn: Callable[..., "subprocess.Popen[str]"] = subprocess.Popen) -> None:
         if not trust.is_trusted(workspace):
             raise RuntimeRefused("workspace_not_trusted")
@@ -375,6 +376,10 @@ class ClaudeSession:
         # settings, which the consent check cannot see. "default" is pinned to what
         # the menu says it resolves to right now.
         command += ["--model", self._spawn_model(model)]
+        if disable_tools:
+            # Commit reviews receive the diff in the prompt and must not run
+            # built-in tools, MCP servers, connectors or project/user hooks.
+            command += ["--tools", "", "--strict-mcp-config", "--setting-sources", ""]
         if effort:
             command += ["--effort", effort]
         command += ["--resume", resume] if resume else ["--session-id", self.session_ref]
@@ -388,7 +393,10 @@ class ClaudeSession:
         self._events: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self._write_lock = threading.Lock()
         try:
-            self.process = spawn(command, cwd=self.workspace, env=session_env(), stdin=subprocess.PIPE,
+            child_environment = session_env()
+            if disable_tools:
+                child_environment["ENABLE_CLAUDEAI_MCP_SERVERS"] = "false"
+            self.process = spawn(command, cwd=self.workspace, env=child_environment, stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                                  encoding="utf-8", errors="replace")
         except OSError:
