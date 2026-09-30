@@ -18,7 +18,7 @@ from typing import Any, Callable
 from tools.claude_runtime import (SESSION_ID, ClaudeSession, CreditConsent, Preflight, RuntimeRefused,
                                   TrustStore, is_credit_billed, preflight)
 from tools.capability_inventory import CapabilityRow, claude_capabilities, codex_capabilities
-from tools.codex_app_server import AppServerTransport, CodexRuntime, ThreadStore, TrustedFolderStore
+from tools.codex_app_server import AppServerError, AppServerTransport, CodexRuntime, ThreadStore, TrustedFolderStore
 from tools.codex_probe import safe_child_env
 from tools.conversation import (ConversationLog, HandoffDraft, HandoffNeedsReview, describe_redactions,
                                 draft_handoff, redact)
@@ -163,6 +163,19 @@ class DesktopHost:
             except RuntimeRefused as exc:
                 # Adapter refusals carry a fixed reason code (e.g. cli_too_old), never private text.
                 self.messages.put(("error", f"Claude refused: {exc}"))
+            except AppServerError as exc:
+                # A timeout may leave a late response on the old connection. Reconnect
+                # before the next turn; never echo arbitrary server error text.
+                if str(exc).startswith("Timed out waiting for "):
+                    if self.codex_transport:
+                        try:
+                            self.codex_transport.close()
+                        except Exception:
+                            pass  # the connection is discarded even if process cleanup fails
+                    self.codex = self.codex_transport = None
+                    self.messages.put(("error", "Codex did not respond in time. Reconnect and retry."))
+                else:
+                    self.messages.put(("error", "Codex App Server failed. Check the installed CLI and sign-in."))
             except Exception as exc:
                 # Error messages may contain local paths or account details; show only type.
                 self.messages.put(("error", type(exc).__name__))

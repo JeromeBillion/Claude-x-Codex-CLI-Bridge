@@ -1,14 +1,35 @@
 """Collaboration and handoff rules independent of provider subscriptions."""
 
 import unittest
+import queue
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tools.desktop import DesktopHost
+from tools.codex_app_server import AppServerError
 from tools.desktop_state import Collaboration, TurnRecord, handoff_text
 from tools.runtime_events import Envelope
 
 
 class DesktopStateTests(unittest.TestCase):
+    def test_codex_timeout_discards_connection_and_gives_safe_retry_message(self):
+        host = DesktopHost.__new__(DesktopHost)
+        host.busy = False
+        host.messages = queue.Queue()
+        host.send_button = SimpleNamespace(configure=lambda **kwargs: None)
+        transport = SimpleNamespace(close=lambda: setattr(transport, "closed", True), closed=False)
+        host.codex = object()
+        host.codex_transport = transport
+        def fail():
+            raise AppServerError("Timed out waiting for thread/start")
+        host._work(fail)
+        kind, message = host.messages.get(timeout=2)
+        self.assertEqual((kind, message), ("error", "Codex did not respond in time. Reconnect and retry."))
+        self.assertEqual(host.messages.get(timeout=2)[0], "idle")
+        self.assertTrue(transport.closed)
+        self.assertIsNone(host.codex)
+        self.assertIsNone(host.codex_transport)
+
     def test_default_codex_gate_declines_escalation_even_if_user_changes_toggle(self):
         request = Envelope("codex", "native", "approval_request", {"family": "command", "command": "write file"})
         with patch("tools.desktop.messagebox.showwarning") as warning, patch("tools.desktop.messagebox.askyesno") as accept:
