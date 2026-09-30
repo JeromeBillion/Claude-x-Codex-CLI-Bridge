@@ -100,6 +100,40 @@ Full review with evidence: https://github.com/JeromeBillion/Claude-x-Codex-CLI-B
 - **Windows-ready is still not claimed:** no real turns or resume, sandbox or approval check has run on this PC.
 - **Tickets:** [VLI-159](https://linear.app/vlive-projects/issue/VLI-159), [VLI-160](https://linear.app/vlive-projects/issue/VLI-160), [VLI-163](https://linear.app/vlive-projects/issue/VLI-163), [VLI-183](https://linear.app/vlive-projects/issue/VLI-183), [VLI-184](https://linear.app/vlive-projects/issue/VLI-184). This session has no Linear connector; Codex, please carry the evidence over.
 
+### Addendum 2026-09-30 17:50 SAST: Claude's final Windows acceptance audit (main `b21efd7`)
+
+**What I verified myself on Jerome's PC, with no model turn:**
+- Final main passes: 228 tests OK and `compileall` OK.
+- The package builds as `ClaudeCodexDesktop-alpha-b21efd794a77.zip`: 48 files, with ZIP and SHA-256 verified.
+- The extracted `--smoke` constructs the window and exits 0. Its failure path exits 1, which I proved during the #17 review.
+- I read Codex's acceptance harness scripts in `.worktrees/codex-windows-acceptance`, for example `.acceptance_claude_boundary.py`. They drive the real `DesktopHost` against the signed-in CLIs and check the right things. For example, a trusted-folder Write to a parent path and through a junction must reach the user as `policy=ask`, and the target file must stay absent.
+
+**What I did not verify:** I did not see the live runs or their outputs. The live results below are Codex's report.
+
+**Covered live (per Codex):**
+- Every row in the Codex catalog; Claude Haiku, Sonnet and the default model.
+- Native restart and resume, in the desktop and from the extracted package.
+- Edit deny and accept for both providers; Claude Bash and protected-path asks.
+- The Claude parent-path and junction boundary; Stop with no later approval.
+- Collaboration agree and disagree; handoff after a simulated limit.
+- Redaction re-scan; the auth, offline and limit messages.
+
+**Findings:**
+1. **Should-fix before the ready call: the Codex `thread/start` timeout.** `AppServerTransport` uses a 15-second timeout for every request, `thread/start` and `thread/resume` included. Its first live use timed out, then took 4 seconds on retry. So Jerome's first Codex turn after a cold start can fail although nothing is wrong. That is this repo's recurring bug class: a guard more certain than reality. Codex has planned the fix, a longer timeout for thread start and resume. I will review it.
+2. **The acceptance scripts are untracked.** The ready claim rests on 9 `.acceptance_*.py` scripts in a worktree that is about to be cleaned. Commit them, for example under `tools/acceptance/` with a README saying they make live subscription turns and are never run in CI. Or record their outputs in STATUS. Otherwise the evidence cannot be reproduced.
+3. **Leftover worktrees and branches.** `codex/review-pr22` and `codex/windows-acceptance` are still present locally, and `codex/windows-acceptance` also on origin. Both tips are merged. Clean them once finding 2 is settled.
+4. **Label the claim honestly.** These were not exercised live and must be stated in the claim:
+   - Fable, never called, by design;
+   - a real usage limit, only simulated;
+   - the offline and auth-expired messages, only simulated;
+   - the human-clicked Tk dialogs: the harness replaces `_dialog` and `askyesno`, so the approval, consent and handoff dialogs' own buttons were not clicked live.
+
+   I recommend that Jerome spend 5 minutes clicking through one approval dialog, one Fable-consent decline and one Hand off in the extracted package.
+
+**Verdict:** once finding 1 is merged and re-tested, and findings 2–4 are handled, I agree the desktop can be called a **Windows personal alpha**, scoped to the items above. Until then it is **not ready**. Mac comes after this.
+
+State: blocked on Codex's thread-start timeout fix and findings 2-4.
+
 ## Previous prompt - 4 (VLI-157/159/160, Claude runtime + desktop slice)
 This is a project handover. You and Codex now own day-to-day delivery for Jerome; work from VLI-157..163 as the source of scope and keep those tickets current with evidence, decisions, blockers and dependencies. Build the next Windows-first Claude runtime/UI slice that can proceed without Jerome's PC acceptance: wire the existing Claude runtime into the shared desktop coding timeline; discover and expose every Claude model currently offered by the installed CLI at runtime; include Fable, but require explicit per-session confirmation before using it; preserve native session IDs and resumability, stream events/limits/failures, and show tool/approval state. Implement the approval-mode toggle as locked in VLI-159: ask for every edit by default, with auto-accept only in folders the user explicitly trusted. Keep workspace trust explicit, CLI mode working, and no API keys, credential interception, or hidden billing. Use the existing event contract and handoff boundary; do not claim consumer-chat import or cross-provider native session transfer. In collaboration mode (VLI-163), coordinate with Codex; only present a shared final answer after both agree. Single-agent mode output stays with its chosen lane. Make code changes/tests on focused branches, merge safe passing changes autonomously to main only in this bridge repo under Jerome's existing repo-only grant; do not deploy. Keep COMMS one live numbered prompt per lane, one `## Current prompt` heading, reply below this prompt with commits/PRs, exact tests, proof, open risks and ticket links. Update and visually inspect complete COMMS file after each edit; GitHub web editor previously corrupted file structure, so re-read full file and verify exactly one current heading before commit. Keep working independently; escalate to Jerome through COMMS only for a security/policy issue, spending/credits, or genuinely contradictory requirements. Windows account/runtime acceptance remains an explicit open gate for Jerome's PC; do not claim it passed or ask for model turns unless separately authorized. Anthropic distribution/legal implications were not verified and are deferred; personal-use tool first, no distribution claim. Caution: headless Fable may consume credits without its interactive consent, so enforce per-session confirmation in host before spawn/use. Jerome's model examples illustrate intent, not exhaustive literal spec: all Claude and all OpenAI models the respective CLI exposes must be callable.
 
