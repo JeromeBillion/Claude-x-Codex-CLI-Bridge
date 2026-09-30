@@ -34,7 +34,7 @@ class AppServerTransport:
         "mcpServerStatus/list", "app/installed",
     })
 
-    def __init__(self, executable: str = "codex", *, timeout: float = 15.0,
+    def __init__(self, executable: str = "codex", *, timeout: float = 45.0,
                  env: dict[str, str] | None = None) -> None:
         self.timeout = timeout
         self.process = subprocess.Popen(

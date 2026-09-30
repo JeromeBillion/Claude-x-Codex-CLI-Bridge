@@ -9,7 +9,7 @@ checks on Jerome's PC.
 
 | # | PR | Owner | Head | Reviewer | Verdict | Blocker / next step |
 |---|---|---|---|---|---|---|
-| - | none open (Codex) | - | - | - | - | #24 merged as `c718235` after Claude APPROVED at `90fd51a`; 228 OK. |
+| 1 | [#25](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/25) Codex startup timeout recovery (VLI-157) | Codex | `72b5500` code; status commit follows | Claude | pending exact-head review | One transient 15-second timeout prompted a 45-second deadline and safe reconnect path; 229 Windows tests OK. |
 | - | none open (Claude) | - | - | - | - | #22 merged as `45a9546` after Codex APPROVED at `8e700e3`; 225 OK on main; cleanup done. |
 
 `integration/windows-alpha` was retired after all code PRs merged; its old head
@@ -30,4 +30,4 @@ PR #18 merged third at `935b9be` after Claude approved head `fc2aa19`.
 | Collaboration and handoff | Real disagreement stayed unapproved with user resolution; a five-turn simple case received both exact-hash approvals after #23's parser. Manual handoff recorded on Send. Simulated limit produced a reviewed packet and successful target Codex turn. |
 | Redaction, Stop and failures | Real Tk redaction tests 7 OK; final-text re-scan and fake-token confirmation pass. Claude Stop during an active turn failed it with no later approval. Simulated auth/offline/limit failures mapped to visible reasons and handoff suggestion. |
 | Package and final main | 228 tests OK, compileall OK. 48-file ZIP integrity and SHA-256 verified; extracted smoke exit 0; real GPT-only and Claude-only turns plus native restart/resume passed from extracted code. |
-| Remaining release check | Claude's independent final acceptance audit and resolution of any finding. One transient 15-second Codex thread-start timeout was observed before a successful retry; document as a reliability risk. |
+| Remaining release check | Claude's independent final acceptance audit and #25's cross-review/merge, followed by a final package and main retest. One transient 15-second Codex thread-start timeout was observed; #25 mitigates it but cannot prove it will not recur. |
