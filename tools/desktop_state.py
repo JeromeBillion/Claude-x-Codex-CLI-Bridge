@@ -33,7 +33,7 @@ def explicit_approval(text: str, digest: str) -> bool:
     if not lines or lines[0].strip() != f"APPROVE {digest}":
         return False
     rest = "\n".join(lines[1:])
-    if re.search(r"\b(?:approve|disagree|reject|refuse|changes)\b", rest, re.IGNORECASE):
+    if re.search(r"\b(?:approv\w*|disagre\w*|reject\w*|refus\w*|changes?)\b", rest, re.IGNORECASE):
         return False
     hashes = re.findall(r"(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", rest, re.IGNORECASE)
     return all(value == digest for value in hashes)
