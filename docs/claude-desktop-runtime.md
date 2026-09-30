@@ -129,6 +129,8 @@ Rules:
 - **Resume.** New chats get `--session-id <uuid>` and reopened chats get `--resume <uuid>`; `--fork-session` branches a chat.
   - The CLI owns the transcript (`%USERPROFILE%\.claude\projects\…\<id>.jsonl`). Its format is internal and it is pruned after 30 days.
   - The app keeps its own envelope log for rendering history, and treats the session ID only as a resume handle.
+  - After the window restarts, the desktop resumes the Claude session that the project's shared conversation last used. That is the last Claude turn in the conversation log; Start new drops it.
+  - If the CLI no longer has that session (pruned, cleared, or from another PC), it exits at startup. The host starts one fresh session, says so in the timeline, and never retries that ID. Fable is the exception: its consent was spent on the failed start, so the host refuses (`saved_session_not_resumable`) and the next send asks for consent again. Checked on 2.1.201: `--resume <unknown id>` returns an error result and exits 1, with no model call.
 - **Consumer chats.** There is no import from claude.ai consumer chats. No supported interface exists for it, and the app does not claim one.
 
 ## Approval toggle (VLI-159, Jerome's locked decision)

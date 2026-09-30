@@ -15,8 +15,8 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Callable
 
-from tools.claude_runtime import (ClaudeSession, CreditConsent, Preflight, RuntimeRefused, TrustStore,
-                                  is_credit_billed, preflight)
+from tools.claude_runtime import (SESSION_ID, ClaudeSession, CreditConsent, Preflight, RuntimeRefused,
+                                  TrustStore, is_credit_billed, preflight)
 from tools.capability_inventory import CapabilityRow, claude_capabilities, codex_capabilities
 from tools.codex_app_server import AppServerTransport, CodexRuntime, ThreadStore, TrustedFolderStore
 from tools.codex_probe import safe_child_env
@@ -47,6 +47,7 @@ class DesktopHost:
         self.codex_transport: AppServerTransport | None = None
         self.claude_preflight: Preflight | None = None
         self.claude_session: ClaudeSession | None = None
+        self.claude_unresumable: set[str] = set()  # saved sessions the CLI no longer has
         self.claude_model: str | None = None
         # The user's yes for credit-billed Claude models, consumed by the next new Claude session.
         self.claude_consent: CreditConsent | None = None
@@ -406,16 +407,28 @@ class DesktopHost:
         assert self.claude_preflight and self.workspace
         if self._new_claude_session(model):
             previous = self.claude_session
-            native = previous.session_ref if previous else None
+            # After a window restart there is no live session: continue the one this
+            # conversation last used, as Codex does with its saved thread.
+            native = previous.session_ref if previous else self._saved_claude_session()
             if previous:
                 previous.close()
                 self.claude_session = None
             # The adapter refuses a credit-billed model without this consent, before spawning.
             consent, self.claude_consent = self.claude_consent, None
-            self.claude_session = ClaudeSession(
-                self.claude_preflight, self.workspace, model=model,
-                resume=native, trust=self.claude_trust, credit_consent=consent,
-                approval_mode=approval, auto_trust=self.codex_trust)
+            try:
+                self.claude_session = self._open_claude_session(model, native, consent, approval)
+            except RuntimeRefused as exc:
+                # The CLI exits at startup when it no longer has that session (cleared,
+                # expired, another PC). Never retry it forever: forget it and start fresh.
+                if previous or native is None or str(exc) != "cli_exited_during_initialize":
+                    raise
+                self.claude_unresumable.add(native)
+                self.messages.put(("line", "\nThe saved Claude session could not be resumed, so Claude starts "
+                                           "a new session. The shared conversation is unchanged; use Hand off to "
+                                           "give Claude its context.\n"))
+                if consent is not None:
+                    raise RuntimeRefused("saved_session_not_resumable") from None  # consent used; ask again
+                self.claude_session = self._open_claude_session(model, None, None, approval)
             self.claude_model = model
         session = self.claude_session
         if session.approval_mode != approval:
@@ -439,6 +452,20 @@ class DesktopHost:
         self._remember(turn, role)
         self.history.append(turn)
         return turn
+
+    def _open_claude_session(self, model: str, resume: str | None, consent: CreditConsent | None,
+                             approval: str) -> ClaudeSession:
+        return ClaudeSession(self.claude_preflight, self.workspace, model=model,
+                             resume=resume, trust=self.claude_trust, credit_consent=consent,
+                             approval_mode=approval, auto_trust=self.codex_trust)
+
+    def _saved_claude_session(self) -> str | None:
+        """The Claude session this conversation last used, if it can still be resumed."""
+        last = self.conversation.last_turn("claude") if self.conversation is not None else None
+        ref = last.session_ref if last else None
+        if not ref or not SESSION_ID.fullmatch(ref) or ref in getattr(self, "claude_unresumable", ()):
+            return None
+        return ref
 
     def _remember(self, turn: TurnRecord, role: str) -> None:
         if self.conversation is not None:
@@ -619,10 +646,8 @@ class DesktopHost:
                 Path(target).write_text(log.render(redacted=True), encoding="utf-8")
 
         def start_new() -> None:
-            if self.workspace is not None:
-                self.conversation = ConversationLog.start_new(private_state_dir(), self.workspace)
+            if self._start_new_conversation():
                 window.destroy()
-                self._line("\n[Started a new shared conversation for this project.]\n")
 
         def forget() -> None:
             if messagebox.askyesno("Forget conversation", "Delete this conversation's local record? "
@@ -633,6 +658,21 @@ class DesktopHost:
         ttk.Button(row, text="Export redacted copy...", command=export).pack(side="left")
         ttk.Button(row, text="Start new conversation", command=start_new).pack(side="left", padx=6)
         ttk.Button(row, text="Forget this conversation", command=forget).pack(side="right")
+
+    def _start_new_conversation(self) -> bool:
+        """A new shared conversation, and a new Claude session with no old context (Codex review of #22)."""
+        if self.workspace is None:
+            return False
+        if self.busy:
+            messagebox.showinfo("Turn running", "Wait for the current turn to finish, or stop it, first.")
+            return False
+        if self.claude_session:
+            self.claude_session.close()  # the next Claude turn starts fresh, not with this context
+        self.claude_session = self.claude_model = self.claude_consent = None
+        self.conversation = ConversationLog.start_new(private_state_dir(), self.workspace)
+        self._line("\n[Started a new shared conversation for this project. Claude's next turn starts a new "
+                   "session.]\n")
+        return True
 
     def _handoff_dialog(self, draft: HandoffDraft, candidate: str | None) -> tuple[str, dict[str, int]] | None:
         window = tk.Toplevel(self.root)

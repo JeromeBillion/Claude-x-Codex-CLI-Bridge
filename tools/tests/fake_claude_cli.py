@@ -165,6 +165,12 @@ def main() -> int:
                           "email": "someone@example.com", "orgId": MARKER, "orgName": SECRET_TEXT,
                           "configDirectory": f"/home/{MARKER}/.claude"}))
         return 0
+    missing = os.environ.get("FAKE_MISSING_SESSION")
+    if missing and "--resume" in args and args[args.index("--resume") + 1] == missing:
+        # What the real CLI does (checked on 2.1.201): an error result, then exit 1.
+        print("No conversation found with session ID: " + missing, file=sys.stderr)
+        emit(result("", is_error=True, subtype="error_during_execution"))
+        return 1
     if "stream-json" not in args:
         sys.stdin.read()
         print(json.dumps(result(SECRET_TEXT, is_error=True, api_error_status=404,
