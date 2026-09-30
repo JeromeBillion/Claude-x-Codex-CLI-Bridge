@@ -150,6 +150,19 @@ class ThreadStore:
             json.dump(data, handle)
         os.replace(temporary, self.path)
 
+    def forget(self, workspace: Path) -> None:
+        """Stop resuming this workspace's old thread when its conversation is reset."""
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        if data.pop(str(workspace.resolve()), None) is None:
+            return
+        temporary = self.path.with_name(self.path.name + ".tmp")
+        with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as handle:
+            json.dump(data, handle)
+        os.replace(temporary, self.path)
+
 
 def _failure_kind(error: dict[str, Any] | None) -> str | None:
     if not isinstance(error, dict):

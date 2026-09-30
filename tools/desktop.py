@@ -660,18 +660,22 @@ class DesktopHost:
         ttk.Button(row, text="Forget this conversation", command=forget).pack(side="right")
 
     def _start_new_conversation(self) -> bool:
-        """A new shared conversation, and a new Claude session with no old context (Codex review of #22)."""
+        """Start a new log and new native sessions for both providers."""
         if self.workspace is None:
             return False
         if self.busy:
             messagebox.showinfo("Turn running", "Wait for the current turn to finish, or stop it, first.")
             return False
+        self.codex_threads.forget(self.workspace)
+        if self.codex:
+            self.codex.thread_id = None  # next turn starts a thread; no old context
         if self.claude_session:
             self.claude_session.close()  # the next Claude turn starts fresh, not with this context
         self.claude_session = self.claude_model = self.claude_consent = None
+        self.pending_handoff = None
         self.conversation = ConversationLog.start_new(private_state_dir(), self.workspace)
-        self._line("\n[Started a new shared conversation for this project. Claude's next turn starts a new "
-                   "session.]\n")
+        self._line("\n[Started a new shared conversation for this project. Both providers' next turns "
+                   "start new native sessions.]\n")
         return True
 
     def _handoff_dialog(self, draft: HandoffDraft, candidate: str | None) -> tuple[str, dict[str, int]] | None:
