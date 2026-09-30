@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import queue
@@ -16,6 +17,7 @@ from test_claude_runtime import FakeCliFixture  # noqa: E402
 from tools import claude_runtime  # noqa: E402
 from tools.approval_modes import TrustedFolderStore  # noqa: E402
 from tools.desktop import DesktopHost  # noqa: E402
+from tools.conversation import ConversationLog  # noqa: E402
 
 
 class DesktopClaudeTests(FakeCliFixture):
@@ -35,6 +37,56 @@ class DesktopClaudeTests(FakeCliFixture):
         host._ask = lambda kind, data: host.asked.append((kind, data.data["policy"])) or False
         self.addCleanup(lambda: host.claude_session and host.claude_session.close())
         return host
+
+    def restarted_host(self) -> DesktopHost:
+        """A fresh host (no live Claude process) that reopened the saved conversation log."""
+        host = self.host()
+        host.claude_unresumable = set()
+        host.conversation = ConversationLog(self.root / "conversation.jsonl", "ws")
+        return host
+
+    def session_spawns(self) -> list[list[str]]:
+        return [entry["argv"] for entry in map(json.loads, self.log.read_text(encoding="utf-8").splitlines())
+                if "--permission-prompt-tool" in entry.get("argv", [])]
+
+    def test_a_restarted_window_resumes_the_conversations_claude_session(self) -> None:
+        first = self.restarted_host()
+        first._claude_turn("Reply OK", "sonnet", "answer")
+        native = first.claude_session.session_ref
+        first.claude_session.close()
+        second = self.restarted_host()  # window closed and reopened: nothing in memory
+        self.assertTrue(second._claude_turn("Reply OK", "sonnet", "answer").ok)
+        argv = self.session_spawns()[-1]
+        self.assertEqual(argv[argv.index("--resume") + 1], native)
+
+    def test_a_saved_session_the_cli_lost_starts_fresh_once_and_is_not_retried(self) -> None:
+        first = self.restarted_host()
+        first._claude_turn("Reply OK", "sonnet", "answer")
+        native = first.claude_session.session_ref
+        first.claude_session.close()
+        second = self.restarted_host()
+        with patch.dict(os.environ, {"FAKE_MISSING_SESSION": native}):
+            self.assertTrue(second._claude_turn("Reply OK", "sonnet", "answer").ok)
+        spawns = self.session_spawns()
+        self.assertIn("--resume", spawns[-2])
+        self.assertNotIn("--resume", spawns[-1])
+        self.assertIn(native, second.claude_unresumable)
+        self.assertIn("could not be resumed", "".join(str(item[1]) for item in list(second.messages.queue)))
+
+    def test_a_lost_fable_session_asks_for_consent_again_instead_of_reusing_it(self) -> None:
+        first = self.restarted_host()
+        first.claude_consent = claude_runtime.CreditConsent(confirmed_by_user=True)
+        first._claude_turn("Reply OK", "claude-fable-5[1m]", "answer")
+        native = first.claude_session.session_ref
+        first.claude_session.close()
+        second = self.restarted_host()
+        second.claude_consent = claude_runtime.CreditConsent(confirmed_by_user=True)
+        with patch.dict(os.environ, {"FAKE_MISSING_SESSION": native}):
+            with self.assertRaises(claude_runtime.RuntimeRefused) as refused:
+                second._claude_turn("Reply OK", "claude-fable-5[1m]", "answer")
+        self.assertEqual(str(refused.exception), "saved_session_not_resumable")
+        self.assertIsNone(second.claude_consent)
+        self.assertIsNone(second._saved_claude_session())  # the next send starts fresh, after a new consent
 
     def test_claude_auto_accept_in_a_trusted_folder_does_not_block_on_the_user(self) -> None:
         (self.root / "a.txt").write_text("a", encoding="utf-8")
