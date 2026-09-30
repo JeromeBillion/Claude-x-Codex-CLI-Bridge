@@ -1,9 +1,12 @@
 # Local CLI capability matrix (VLI-161)
 
 The desktop's **Inspect capabilities** button queries the installed providers
-after Connect. It does not send a model turn or invoke a tool. Results are
+after Connect. It does not send a model turn or invoke an MCP tool call. Results are
 shown only in the local window, not saved in the repository or transcript.
-Claude's MCP listing may health-check configured servers. The subprocess gets
+The button warns that configured MCP servers may start for a health check.
+Claude inventory runs with the selected project as its working directory, only
+after that folder has been explicitly trusted for Claude sessions. Claude's
+MCP listing health-checks configured servers in that project. The subprocess gets
 the same restricted environment as the Claude probe, which disables automatic
 Claude.ai MCP connector loading. This view therefore covers local MCP servers,
 not every connector visible in Claude.ai.

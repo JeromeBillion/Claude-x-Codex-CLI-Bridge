@@ -78,7 +78,8 @@ class DesktopHost:
         self.project_label = ttk.Label(top, text="No project selected")
         self.project_label.grid(row=0, column=1, sticky="w", padx=10)
         ttk.Button(top, text="Connect / refresh catalogs", command=self._connect).grid(row=0, column=2)
-        ttk.Button(top, text="Inspect capabilities", command=self._inspect_capabilities).grid(row=0, column=3, padx=6)
+        ttk.Button(top, text="Inspect capabilities (MCP health check)",
+                   command=self._inspect_capabilities).grid(row=0, column=3, padx=6)
         top.columnconfigure(1, weight=1)
 
         options = ttk.Frame(self.root, padding=(10, 0, 10, 8))
@@ -211,13 +212,19 @@ class DesktopHost:
         if mode != "claude_only" and self.codex is None or mode != "gpt_only" and self.claude_preflight is None:
             messagebox.showinfo("Connect needed", "Connect the selected provider CLI first.")
             return
-        self.status.set("Reading installed CLI capabilities and MCP health. No model turn is being sent.")
+        if mode != "gpt_only" and not self.claude_trust.is_trusted(self.workspace):
+            if not messagebox.askyesno("Trust project for Claude MCP health check?",
+                                       f"Inspecting capabilities can start configured MCP servers in:\n"
+                                       f"{self.workspace}\n\nTrust this folder for Claude sessions and MCP health checks?"):
+                return
+            self.claude_trust.trust(self.workspace)
+        self.status.set("Configured MCP servers may start for a health check. No model turn is being sent.")
         def inspect() -> None:
             rows: list[CapabilityRow] = []
             if mode != "claude_only":
                 rows.extend(codex_capabilities(self.codex, self.workspace))
             if mode != "gpt_only":
-                rows.extend(claude_capabilities(self.claude_preflight.executable))
+                rows.extend(claude_capabilities(self.claude_preflight.executable, self.workspace))
             self.messages.put(("capabilities", rows))
         self._work(inspect)
 

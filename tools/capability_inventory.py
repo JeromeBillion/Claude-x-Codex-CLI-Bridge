@@ -88,10 +88,14 @@ def codex_capabilities(runtime: CodexRuntime, workspace: Path) -> list[Capabilit
     return result
 
 
-def _claude_command(executable: Sequence[str], args: Sequence[str]) -> tuple[int, str]:
+def _claude_command(executable: Sequence[str], args: Sequence[str], workspace: Path) -> tuple[int, str]:
+    workspace = workspace.resolve(strict=True)
+    if not workspace.is_dir():
+        raise ValueError("Capability workspace must be a directory")
     process = subprocess.Popen([*executable, *args], stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                               text=True, encoding="utf-8", errors="replace", env=claude_child_env())
+                               text=True, encoding="utf-8", errors="replace", env=claude_child_env(),
+                               cwd=str(workspace))
     try:
         stdout, _ = process.communicate(timeout=45)
     except subprocess.TimeoutExpired:
@@ -112,11 +116,11 @@ def _claude_command(executable: Sequence[str], args: Sequence[str]) -> tuple[int
 _MCP_STATE = re.compile(r"(?:Connected|Failed|Pending approval)\s*$", re.IGNORECASE)
 
 
-def claude_capabilities(executable: Sequence[str]) -> list[CapabilityRow]:
-    """List local plugins and health status; no chat/session/model is started."""
+def claude_capabilities(executable: Sequence[str], workspace: Path) -> list[CapabilityRow]:
+    """List project plugins and MCP health; no chat/session/model is started."""
     result: list[CapabilityRow] = []
     try:
-        code, output = _claude_command(executable, ("plugin", "list", "--json"))
+        code, output = _claude_command(executable, ("plugin", "list", "--json"), workspace)
         plugins = json.loads(output) if code == 0 else None
         if not isinstance(plugins, list):
             raise ValueError("Unexpected Claude plugin inventory")
@@ -127,7 +131,7 @@ def claude_capabilities(executable: Sequence[str]) -> list[CapabilityRow]:
     except Exception:
         result.append(CapabilityRow("Claude", "plugin", "inventory", "unavailable"))
     try:
-        _, output = _claude_command(executable, ("mcp", "list"))
+        _, output = _claude_command(executable, ("mcp", "list"), workspace)
         matched = 0
         for line in output.splitlines():
             state_match = _MCP_STATE.search(line)
