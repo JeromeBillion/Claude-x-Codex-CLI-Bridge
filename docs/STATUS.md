@@ -12,7 +12,7 @@ checks on Jerome's PC.
 | 4 | [#20](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/20) shared conversation and handoff (VLI-160) | Claude | `6e185d7` | Codex | APPROVED at `6e185d7` | **Merged** as `111ba18`; 198 OK on main. Branch cleanup is waiting on Jerome's permission rule. |
 | 5 | [#16](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/16) capability inventory (VLI-161) | Codex | `ce27da5` | Claude | CHANGES REQUESTED at `2ec77a8` | Workspace cwd and MCP health-check warning fixed; 203 Windows tests OK. Await exact-head re-review. |
 | 6 | [#13](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/13) commit relay and roadmap (VLI-183) | Codex | `ef846eb` | Claude | APPROVED at `ef846eb` | Merge when it is next in order. Three non-blocking follow-ups are on the PR. |
-| 7 | [#17](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/17) Windows alpha package (VLI-162) | Codex | `ba6333e` | Claude | not reviewed | Last in the order: rebuild the ZIP from merged main. |
+| 7 | [#17](https://github.com/JeromeBillion/Claude-x-Codex-CLI-Bridge/pull/17) Windows alpha package (VLI-162) | Codex | `359356b` | Claude | not reviewed | Linked-directory escape fixed; 3 focused tests OK. Last in order: rebase, full suite, rebuild ZIP from merged main. |
 
 `integration/windows-alpha` (Codex) is a test bed only. Retire it once main has
 all of the above.
