@@ -646,10 +646,8 @@ class DesktopHost:
                 Path(target).write_text(log.render(redacted=True), encoding="utf-8")
 
         def start_new() -> None:
-            if self.workspace is not None:
-                self.conversation = ConversationLog.start_new(private_state_dir(), self.workspace)
+            if self._start_new_conversation():
                 window.destroy()
-                self._line("\n[Started a new shared conversation for this project.]\n")
 
         def forget() -> None:
             if messagebox.askyesno("Forget conversation", "Delete this conversation's local record? "
@@ -660,6 +658,21 @@ class DesktopHost:
         ttk.Button(row, text="Export redacted copy...", command=export).pack(side="left")
         ttk.Button(row, text="Start new conversation", command=start_new).pack(side="left", padx=6)
         ttk.Button(row, text="Forget this conversation", command=forget).pack(side="right")
+
+    def _start_new_conversation(self) -> bool:
+        """A new shared conversation, and a new Claude session with no old context (Codex review of #22)."""
+        if self.workspace is None:
+            return False
+        if self.busy:
+            messagebox.showinfo("Turn running", "Wait for the current turn to finish, or stop it, first.")
+            return False
+        if self.claude_session:
+            self.claude_session.close()  # the next Claude turn starts fresh, not with this context
+        self.claude_session = self.claude_model = self.claude_consent = None
+        self.conversation = ConversationLog.start_new(private_state_dir(), self.workspace)
+        self._line("\n[Started a new shared conversation for this project. Claude's next turn starts a new "
+                   "session.]\n")
+        return True
 
     def _handoff_dialog(self, draft: HandoffDraft, candidate: str | None) -> tuple[str, dict[str, int]] | None:
         window = tk.Toplevel(self.root)

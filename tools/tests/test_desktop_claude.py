@@ -59,6 +59,27 @@ class DesktopClaudeTests(FakeCliFixture):
         argv = self.session_spawns()[-1]
         self.assertEqual(argv[argv.index("--resume") + 1], native)
 
+    def test_start_new_conversation_drops_the_live_claude_session(self) -> None:
+        host = self.restarted_host()
+        host.busy = False
+        host._line = lambda text: None
+        host._claude_turn("Reply OK", "sonnet", "answer")
+        old = host.claude_session
+        with patch("tools.desktop.private_state_dir", return_value=self.root / "state"):
+            self.assertTrue(host._start_new_conversation())
+        self.assertIsNone(host.claude_session)
+        self.assertIsNotNone(old.process.poll())  # the old process is closed, not left running
+        host._claude_turn("Reply OK", "sonnet", "answer")
+        self.assertIsNot(host.claude_session, old)
+        self.assertNotIn("--resume", self.session_spawns()[-1])  # the new log has no Claude turn yet
+
+    def test_start_new_conversation_waits_for_a_running_turn(self) -> None:
+        host = self.restarted_host()
+        host.busy = True
+        with patch("tools.desktop.messagebox.showinfo") as told:
+            self.assertFalse(host._start_new_conversation())
+        told.assert_called_once()
+
     def test_a_saved_session_the_cli_lost_starts_fresh_once_and_is_not_retried(self) -> None:
         first = self.restarted_host()
         first._claude_turn("Reply OK", "sonnet", "answer")
